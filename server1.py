@@ -1,4 +1,4 @@
-""import socket
+import socket
 import struct
 import json
 import numpy as np
@@ -108,24 +108,36 @@ def debug_decrypt_values(privkey, ciphertexts, lf, name):
     print(f"\n=== Debug {name} ===")
     for i, ct in enumerate(ciphertexts):
         try:
-            val = labhe.decrypt(privkey, ct, lf)
-            print(f"{name}[{i}] = {val}")
-            if abs(val) > 1e6:
-                print(f"  ⚠️  WARNING: {name}[{i}] is unusually large!")
+            decoded = labhe.D(privkey, ct)
+            bit_length = decoded.bit_length()
+            print(f"{name}[{i}] raw decoded bit length: {bit_length}")
+            if bit_length < 200:
+                print(f"{name}[{i}] raw decoded = {decoded}")
+            else:
+                print(f"{name}[{i}] raw decoded = <too large to display>")
+
+            scaling_factor = mpz(1 << lf)
+            original_val_mpz = decoded // scaling_factor
+            remainder = decoded % scaling_factor
+            if abs(original_val_mpz) < 10**15:
+                original_val = float(original_val_mpz) + float(remainder) / float(scaling_factor)
+                print(f"{name}[{i}] with lf={lf}: {original_val}")
+            else:
+                print(f"{name}[{i}] with lf={lf}: Value too large for float conversion")
         except Exception as e:
             print(f"  ❌ Error decrypting {name}[{i}]: {e}")
 
 def main():
     lf = 16
     Nm = 2
-    cold_start = True
+    K = 3
 
     privkey, pubkey = labhe.Init(2048)
     labhe.privkey = privkey
     labhe.pubkey = pubkey
 
-    H_bar = np.identity(Nm)
-    F_bar = np.identity(Nm)
+    H_bar = np.array([[0.5, 0.2], [-0.1, 0.8]])
+    F_bar = np.array([[0.3, 0.4], [0.1, 0.6]])
 
     hu = [1.0 for _ in range(Nm)]
     lu = [-1.0 for _ in range(Nm)]
@@ -150,10 +162,14 @@ def main():
     U0 = zero_vector(Nm, pubkey, lf)
     zk = U0
     zk_prev = zk
-    K = 3
 
-    hu_enc = [labhe.encrypt(v, label=f"hu_{i}", lf=lf) for i, v in enumerate(hu)]
-    lu_enc = [labhe.encrypt(v, label=f"lu_{i}", lf=lf) for i, v in enumerate(lu)]
+    hu_enc = [labhe.encrypt(v, label=f"hu_{i}", lf=lf, auto_scale=True) for i, v in enumerate(hu)]
+    lu_enc = [labhe.encrypt(v, label=f"lu_{i}", lf=lf, auto_scale=True) for i, v in enumerate(lu)]
+
+    for i, v in enumerate(lu):
+        info = labhe.check_value_compatibility(v, lf)
+        if not info["compatible"]:
+            print(f"lu[{i}] = {v} is too large for lf={lf}. Suggest lf={info['suggested_lf']}")
 
     for k in range(K):
         I_minus_H = np.identity(Nm) - H_bar
@@ -175,10 +191,8 @@ def main():
         for u, z in zip(Uk1, zk_prev):
             term1 = control_scalar_mult_fixed(pubkey, u, 1.1)
             term2 = control_scalar_mult_fixed(pubkey, z, -0.1)
-
             term1.label = u.label
             term2.label = u.label
-
             combined = labhe.Eval_add(pubkey, term1, term2)
             zk.append(combined)
 
@@ -190,7 +204,6 @@ def main():
     enc_result = [labhe.Eval_add(pubkey, u, r) for u, r in zip(UK_m, rho)]
 
     send_json(sock_s2, [{'label': c.label, 'ciphertext': str(c.ciphertext)} for c in enc_result])
-
     recv_rerand = recv_data(sock_s2)
     rerand = [labhe.Ciphertext(e['label'], mpz(e['ciphertext'])) for e in recv_rerand]
 
@@ -199,7 +212,14 @@ def main():
 
     send_json(conn_c, [{'label': c.label, 'ciphertext': str(c.ciphertext)} for c in final_u])
     print("Server1: Sent final encrypted u to Client")
+    print(f"pubkey.max_int: {pubkey.max_int}")
+    print(f"lf value: {lf}")
+    print(f"Type of pubkey.max_int: {type(pubkey.max_int)}")
+    print(f"hu max: {max(hu)}")
+    print(f"hu min: {min(hu)}")
+    print(f"hu values: {hu[:5]}...")  # First 5 values
 
+    send_json(sock_s2, {"type": "done"})
     conn_c.close()
     sock_s2.close()
     sock_c.close()

@@ -1,11 +1,12 @@
-# test_debug.py - Let's trace exactly where the explosion happens
+# test_debug.py - Debug fixed-point LabHE logic
 
 import numpy as np
 import labhe
 from gmpy2 import mpz
+import argparse
 
 def debug_encrypt_decrypt():
-    """First, let's verify basic encryption/decryption works"""
+    """First, verify basic encryption/decryption works"""
     lf = 16
     privkey, pubkey = labhe.Init(2048)
     
@@ -27,6 +28,7 @@ def debug_encrypt_decrypt():
 def debug_scalar_multiplication():
     """Test scalar multiplication step by step"""
     lf = 16
+    scale = 1 << lf
     privkey, pubkey = labhe.Init(2048)
     
     print("\n=== Testing Scalar Multiplication ===")
@@ -37,29 +39,35 @@ def debug_scalar_multiplication():
     result = labhe.decrypt(privkey, result_ct, lf)
     print(f"2.0 * 3 = {result} (expected: 6.0)")
     
-    # Test 2: Multiplication by 1 (should be unchanged)
-    result_ct = labhe.Eval_mult_scalar(pubkey, ct, 1)  # 2.0 * 1 = 2.0
+    # Test 2: Multiplication by 1
+    result_ct = labhe.Eval_mult_scalar(pubkey, ct, 1)
     result = labhe.decrypt(privkey, result_ct, lf)
     print(f"2.0 * 1 = {result} (expected: 2.0)")
     
-    # Test 3: What happens with the problematic scaling?
+    # Test 3: Problematic scaling
     print("\n--- Testing problematic scaling ---")
-    scale = 1 << lf
-    problematic_scalar = int(round(1.0 * scale))  # This is what the old code does
-    print(f"Problematic scalar: {problematic_scalar}")
+    problematic_scalar = int(round(1.0 * scale))
+    print(f"Problematic scalar (scaled again): {problematic_scalar}")
     
     result_ct = labhe.Eval_mult_scalar(pubkey, ct, problematic_scalar)
     result = labhe.decrypt(privkey, result_ct, lf)
-    print(f"2.0 * {problematic_scalar} = {result} (this should be huge!)")
+    print(f"2.0 * {problematic_scalar} = {result} (⚠ expected to be huge)")
+
+    if abs(result) > 1e6:
+        print("  ⚠️  WRONG METHOD exploded!")
+    else:
+        print("  ✅ WRONG METHOD unexpectedly stable")
+
+    print("✅ Scalar multiplication test completed.")
 
 def debug_matrix_vector_step_by_step():
     """Debug matrix-vector multiplication step by step"""
     lf = 16
+    scale = 1 << lf
     privkey, pubkey = labhe.Init(2048)
     
-    print("\n=== Testing Matrix-Vector Multiplication Step by Step ===")
+    print("\n=== Testing Matrix-Vector Multiplication Step-by-Step ===")
     
-    # Simple 2x2 identity matrix
     I = np.array([[1.0, 0.0], [0.0, 1.0]])
     vec = [1.0, 2.0]
     
@@ -70,12 +78,11 @@ def debug_matrix_vector_step_by_step():
     enc_vec = []
     for i, x in enumerate(vec):
         ct = labhe.encrypt(x, f"vec_{i}", lf)
-        # Verify encryption worked
         decrypted = labhe.decrypt(privkey, ct, lf)
         print(f"Encrypted vec[{i}]: {x} -> {decrypted}")
         enc_vec.append(ct)
     
-    # Now do matrix-vector multiplication manually
+    # Matrix-vector multiplication
     print("\n--- Manual matrix-vector multiplication ---")
     result = []
     
@@ -85,32 +92,29 @@ def debug_matrix_vector_step_by_step():
         
         for j, scalar in enumerate(row):
             print(f"  Processing element [{i},{j}] = {scalar}")
-            
             if scalar == 0:
-                print(f"    Skipping zero element")
+                print("    Skipping zero element")
                 continue
             
-            # This is what the OLD code does (WRONG):
-            scalar_int = int(round(scalar))
-            wrong_scalar = int(round(scalar * scale))
-            print(f"    Wrong scalar (old method): {wrong_scalar}")
+            wrong_scalar = int(round(scalar * scale))  # old broken way
+            right_scalar = int(round(scalar))           # correct fixed-point way
             
-            # This is what we SHOULD do:
-            right_scalar = int(round(scalar))
+            print(f"    Wrong scalar (old method): {wrong_scalar}")
             print(f"    Right scalar (new method): {right_scalar}")
             
-            # Test both methods
             prod_wrong = labhe.Eval_mult_scalar(pubkey, enc_vec[j], mpz(wrong_scalar))
             prod_right = labhe.Eval_mult_scalar(pubkey, enc_vec[j], mpz(right_scalar))
             
             decrypted_wrong = labhe.decrypt(privkey, prod_wrong, lf)
             decrypted_right = labhe.decrypt(privkey, prod_right, lf)
             
-            print(f"    Wrong result: {decrypted_wrong}")
-            print(f"    Right result: {decrypted_right}")
+            print(f"    ❌ Wrong result: {decrypted_wrong}")
+            print(f"    ✅ Right result: {decrypted_right}")
             
+            if abs(decrypted_wrong) > 1e6:
+                print("    ⚠️  WRONG METHOD exploded!")
             if acc is None:
-                acc = prod_right  # Use the right method
+                acc = prod_right
             else:
                 acc = labhe.Eval_add(pubkey, acc, prod_right)
         
@@ -129,9 +133,19 @@ def debug_matrix_vector_step_by_step():
     print(f"\nInput vector: {vec}")
     print(f"Output vector: {final_result}")
     print(f"Expected (I * vec): {vec}")
+    print("✅ Matrix-vector multiplication test completed.")
 
 if __name__ == "__main__":
-    # Run all debug tests
-    if debug_encrypt_decrypt():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--test', choices=['all', 'basic', 'scalar', 'matvec'], default='all')
+    args = parser.parse_args()
+
+    if args.test in ['all', 'basic']:
+        if not debug_encrypt_decrypt():
+            exit(1)
+
+    if args.test in ['all', 'scalar']:
         debug_scalar_multiplication()
+
+    if args.test in ['all', 'matvec']:
         debug_matrix_vector_step_by_step()
