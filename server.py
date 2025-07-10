@@ -1,181 +1,217 @@
+#!/usr/bin/env python3
+
 import socket
-import struct
+import sys,struct
 import json
-import numpy as np
 from gmpy2 import mpz
-import labhe
-from utils import he_add, he_scalar_mul, zero_vector, encrypt_vector, decrypt_vector, truncate
+import paillier
+import numpy as np
+import time
+import random
+try:
+	import gmpy2
+	HAVE_GMP = True
+except ImportError:
+	HAVE_GMP = False
+
+DEFAULT_KEYSIZE = 512						# set here the default number of bits of the RSA modulus
+DEFAULT_MSGSIZE = 64 						# set here the default number of bits the plaintext can have
+DEFAULT_SECURITYSIZE = 100					# set here the default number of bits for the one time pads
+DEFAULT_PRECISION = int(DEFAULT_MSGSIZE/2)	# set here the default number of fractional bits
+NETWORK_DELAY = 0 							# set here the default network delay
+
+seed = 42	# pick a seed for the random generator
+
+def encrypt_vector(pubkey, x, coins=None):
+	if (coins==None):
+		return [pubkey.encrypt(y) for y in x]
+	else: return [pubkey.encrypt(y,coins.pop()) for y in x]
+
+def sum_encrypted_vectors(x, y):
+	return [x[i] + y[i] for i in range(np.size(x))]
+
+"""We take the convention that a number x < N/3 is positive, and that a number x > 2N/3 is negative. 
+	The range N/3 < x < 2N/3 allows for overflow detection.""" 
+
+def Q_s(scalar,prec=DEFAULT_PRECISION):
+	return int(scalar*(2**prec))/(2**prec)
+
+def Q_vector(vec,prec=DEFAULT_PRECISION):
+	if np.size(vec)>1:
+		return [Q_s(x,prec) for x in vec]
+	else:
+		return Q_s(vec,prec)
+
+def Q_matrix(mat,prec=DEFAULT_PRECISION):
+	return [Q_vector(x,prec) for x in mat]
+
+def fp(scalar,prec=DEFAULT_PRECISION):
+	return mpz(scalar*(2**prec))
+
+def fp_vector(vec,prec=DEFAULT_PRECISION):
+	if np.size(vec)>1:
+		return [fp(x,prec) for x in vec]
+	else:
+		return fp(vec,prec)
+
+def fp_matrix(mat,prec=DEFAULT_PRECISION):
+	return [fp_vector(x,prec) for x in mat]
+
+def retrieve_fp(scalar,prec=DEFAULT_PRECISION):
+	return scalar/(2**prec)
+
+def retrieve_fp_vector(vec,prec=DEFAULT_PRECISION):
+	return [retrieve_fp(x,prec) for x in vec]
+
+def retrieve_fp_matrix(mat,prec=DEFAULT_PRECISION):
+	return [retrieve_fp_vector(x,prec) for x in mat]
+
+def decrypt_vector(privkey, x):
+    return np.array([privkey.decrypt(i) for i in x])
+
+class Server:
+	def __init__(self, n, m, N, l=DEFAULT_MSGSIZE, sigma = DEFAULT_KEYSIZE):
+		filepub = "Keys/pubkey"+str(DEFAULT_KEYSIZE)+".txt"
+		with open(filepub, 'r') as fin:
+			data=[line.split() for line in fin]
+		Np = mpz(data[0][0])
+		pubkey = paillier.PaillierPublicKey(n=Np)
+		self.pubkey = pubkey		
+		fileH = "Data/H"+str(n)+"_"+str(m)+"_"+str(N)+".txt"
+		H = np.loadtxt(fileH, delimiter=',')
+		fileF = "Data/F"+str(n)+"_"+str(m)+"_"+str(N)+".txt"
+		F = np.loadtxt(fileF, delimiter=',')		
+		fileG0 = "Data/G0"+str(n)+"_"+str(m)+"_"+str(N)+".txt"
+		G0 = np.loadtxt(fileG0, delimiter=',')
+		fileK = "Data/K"+str(n)+"_"+str(m)+"_"+str(N)+".txt"		
+		K = np.loadtxt(fileK, delimiter=',')	
+		Kc = K[0];	Kw = K[1]
+		self.Kc = int(Kc);	self.Kw = int(Kw)
+
+		nc = m*N
+		self.nc = nc
+		Hq = Q_matrix(H)
+		eigs = np.linalg.eigvals(Hq)
+		L = np.real(max(eigs))
+		mu = np.real(min(eigs))
+		cond = Q_s(L/mu)
+		eta = Q_s((np.sqrt(cond)-1)/(np.sqrt(cond)+1))
+		Hf = Q_matrix([[h/Q_s(L) for h in hv] for hv in Hq])
+		Ft = F.transpose()
+		Ff = Q_matrix([[Q_s(h)/Q_s(L) for h in hv] for hv in Ft])
+		self.eta = eta
+		self.Hf = Hf
+		mFf = np.negative(Ff)
+		self.mFft = fp_matrix(mFf,2*DEFAULT_PRECISION)
+
+		coeff_z = np.eye(nc) - Hf;
+		self.coeff_z = fp_matrix(coeff_z)
+
+	def compute_coeff(self,x0):
+		coeff_0 = np.dot(self.mFft,x0)
+		self.coeff_0 = coeff_0
+
+	def t_iterate(self,z):
+		return sum_encrypted_vectors(np.dot(self.coeff_z,z),self.coeff_0)
+
+	def z_iterate(self,new_U,U):
+		new_z = [fp(1+self.eta)*v for v in new_U]
+		z = [fp(-self.eta)*v for v in U]
+		return sum_encrypted_vectors(new_z,z)
 
 
-def send_data(sock, data):
-    payload = json.dumps(data)
-    sock.sendall(struct.pack('>i', len(payload)) + payload.encode('utf-8'))
+def send_encr_data(encrypted_number_list):
+	time.sleep(NETWORK_DELAY)
+	enc_with_one_pub_key = {}
+	enc_with_one_pub_key = [str(x.ciphertext()) for x in encrypted_number_list]
+	return json.dumps(enc_with_one_pub_key)
 
+def send_plain_data(data):
+	time.sleep(NETWORK_DELAY)
+	return json.dumps([str(x) for x in data])
 
-def recv_data(sock):
-    size_data = sock.recv(4)
-    if not size_data:
-        raise ConnectionError("Received empty header (connection closed).")
-    size = struct.unpack('>i', size_data)[0]
-    data = b''
-    while len(data) < size:
-        to_read = size - len(data)
-        chunk = sock.recv(4096 if to_read > 4096 else to_read)
-        if not chunk:
-            raise ConnectionError("Incomplete message received.")
-        data += chunk
-    return json.loads(data.decode())
+def recv_size(the_socket):
+	#data length is packed into 4 bytes
+	total_len=0;total_data=[];size=sys.maxsize
+	size_data=sock_data=bytes([]);recv_size=4096
+	while total_len<size:
+		sock_data=the_socket.recv(recv_size)
+		if not total_data:
+			if len(sock_data)>4:
+				size=struct.unpack('>i', sock_data[:4])[0]
+				recv_size=size
+				if recv_size>4096:recv_size=4096
+				total_data.append(sock_data[4:])
+			else:
+				size_data+=sock_data
 
+		else:
+			total_data.append(sock_data)
+		total_len=sum([len(i) for i in total_data ])
+	return b''.join(total_data)
 
-def he_matvec_mul(mat, enc_vector, pubkey, lf):
-    scale = 1 << lf
-    result = []
-    for i, row in enumerate(mat):
-        acc = None
-        for j, scalar in enumerate(row):
-            if scalar == 0:
-                continue
-            fixed_scalar = int(round(scalar * scale))
-            prod = labhe.Eval_mult_scalar(pubkey, enc_vector[j], mpz(fixed_scalar))
-            prod.label = f"row_{i}"
-            if acc is None:
-                acc = prod
-            else:
-                acc = labhe.Eval_add(pubkey, acc, prod)
-        if acc is None:
-            acc = labhe.Eval_mult_scalar(pubkey, enc_vector[0], mpz(0))
-            acc.label = f"row_{i}"
-        result.append(acc)
-    return result
-
-
-def control_scalar_mult(pubkey, ciphertext, scalar_float):
-    if abs(scalar_float - 1.1) < 1e-6:
-        return labhe.Eval_mult_scalar(pubkey, ciphertext, 1)
-    elif abs(scalar_float - (-0.1)) < 1e-6:
-        return labhe.Eval_mult_scalar(pubkey, ciphertext, 0)
-    else:
-        return labhe.Eval_mult_scalar(pubkey, ciphertext, int(round(scalar_float)))
-
-
-class FGDServer:
-    def __init__(self, H_bar_f, F_bar_f, eta_bar, cold_start, Uw, m, pubkey, privkey, K, lf):
-        self.H_bar_f = H_bar_f
-        self.F_bar_f = F_bar_f
-        self.eta_bar = eta_bar
-        self.cold_start = cold_start
-        self.Uw = Uw
-        self.m = m
-        self.pubkey = pubkey
-        self.privkey = privkey
-        self.K = K
-        self.lf = lf
-        self.enc_Uk = None
-        self.enc_xt = None
-
-    def receive_encrypted_xt(self, enc_xt_objs):
-        self.enc_xt = [
-            labhe.Ciphertext.from_json(c)
-            for c in enc_xt_objs
-        ]
-        print(f"Server: Received enc_xt with length {len(self.enc_xt)}")
-        self.init_U0()
-
-    def init_U0(self):
-        N = self.H_bar_f.shape[0]
-        print(f"Server: Initializing U0 with N={N}")
-        if self.cold_start:
-            self.enc_Uk = zero_vector(N, self.pubkey)
-        else:
-            tail = self.Uw[self.m:]
-            self.enc_Uk = encrypt_vector(tail + [0] * self.m, self.pubkey, label='xt')
-        self.enc_zk = self.enc_Uk
-
-    def compute_tk(self):
-        I_minus_H = np.eye(self.H_bar_f.shape[0]) - self.H_bar_f
-        minus_F = -self.F_bar_f
-        enc_t1 = he_matvec_mul(I_minus_H, self.enc_zk, self.pubkey, self.lf)
-        enc_t2 = he_matvec_mul(minus_F, self.enc_xt, self.pubkey, self.lf)
-        if len(enc_t1) != len(enc_t2):
-            raise ValueError("Vector length mismatch")
-        tk = he_add(enc_t1, enc_t2, self.pubkey)
-        return tk
-
-    def update_uk_and_zk(self, enc_Uk_plus1_objs):
-        enc_Uk_plus1 = [
-            labhe.Ciphertext.from_json(c)
-            for c in enc_Uk_plus1_objs
-        ]
-        for i in range(len(enc_Uk_plus1)):
-            enc_Uk_plus1[i].label = self.enc_Uk[i].label
-        term1 = [control_scalar_mult(self.pubkey, u, 1.1) for u in enc_Uk_plus1]
-        term2 = [control_scalar_mult(self.pubkey, z, -0.1) for z in self.enc_Uk]
-        enc_zk_new = he_add(term1, term2, self.pubkey)
-        self.enc_Uk = enc_Uk_plus1
-        self.enc_zk = enc_zk_new
-
-    def get_final_UK(self):
-        return [c.to_json() for c in self.enc_Uk]
-
+def get_enc_data(received_dict,pubkey):
+	return [paillier.EncryptedNumber(pubkey, int(x)) for x in received_dict]
 
 def main():
-    print("Server: Initializing LabHE...")
-    privkey, pubkey = labhe.Init(512)
-    upk, _ = labhe.KeyGen(pubkey)
-    n, m, N = 5, 5, 35
-    cold_start = True
-    Uw = [0] * N
-    eta_bar = 0.1
-    K = 3
-    lf = 2
-    H = np.loadtxt(f"Data/H{n}_{m}_{N}.txt", delimiter=',')
-    F_full = np.loadtxt(f"Data/F{n}_{m}_{N}.txt", delimiter=',')
-    F = np.zeros((N, N))
-    F[:m, :] = F_full
-    print(f"Server: Loaded matrices H: {H.shape}, F: {F.shape}")
-    print(f"Sample row from H (first 5 elements): {H[0][:5]}")
-    print(f"Sample row from F (first 5 elements): {F[0][:5]}")
-    print(f"H range: min={np.min(H)}, max={np.max(H)}")
-    print(f"F range: min={np.min(F)}, max={np.max(F)}")
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_address = ('localhost', 10001)
-    server_socket.bind(server_address)
-    server_socket.listen(1)
-    print("Server: Listening on port 10001...")
-    conn, client_address = server_socket.accept()
-    print("Server: Connected to", client_address)
-    server = FGDServer(H, F, eta_bar, cold_start, Uw, m, pubkey, privkey, K, lf)
-    try:
-        msg = recv_data(conn)
-        if msg['type'] == 'xt':
-            print("Server: Received [[x(t)]]")
-            server.receive_encrypted_xt(msg['data'])
-        for k in range(K):
-            print(f"Server: Sending [[tk]] for iteration {k}")
-            tk = server.compute_tk()
-            send_data(conn, {'type': 'tk', 'data': [c.to_json() for c in tk]})
-            msg = recv_data(conn)
-            if msg['type'] == 'Uk+1':
-                print(f"Server: Received [[Uk+1]] at iteration {k}")
-                server.update_uk_and_zk(msg['data'])
-        print("Server: Sending final [[UK]] to client.")
-        final_UK = server.get_final_UK()
-        send_data(conn, {'type': 'final', 'data': final_UK})
-        Uk_plain = decrypt_vector(server.enc_Uk, server.privkey)
-        Uk_trunc = truncate(Uk_plain, lf)
-        print("Server1: Final plaintext UK before sending (truncated, first 5):", Uk_trunc[:5])
-        print("Server1: Raw mpz final[0]:", Uk_plain[0])
-        print("Server1: Type of element:", type(Uk_plain[0]))
-    except Exception as e:
-        print(f"Server: Error occurred - {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        print("Server: Closing connection.")
-        conn.close()
-        server_socket.close()
+	# Make sure the default parameters are the same as in client.py
+	lf = DEFAULT_PRECISION
+	n = 5	# set the number of states
+	m = 5	# set the number of control inputs
+	N = 7	# set the horizon length
+	T = 1 	# set the number of time steps
+	server = Server(n,m,N)
+	server.Kc = 50; server.Kw = 20	# set the number of cold start iterations and warm start iterations
+	Kc = server.Kc; Kw = server.Kw
+	nc = server.nc
+	server.m = m
+	pubkey = server.pubkey
+	U = [0]*nc
+
+	# Create a TCP/IP socket
+	sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	port = 10000
+
+	# Connect the socket to the port where the server is listening
+	localhost = [l for l in ([ip for ip in socket.gethostbyname_ex(socket.gethostname())[2] if not ip.startswith("127.")][:1], [[(s.connect(('8.8.8.8', 53)), s.getsockname()[0], s.close()) for s in [socket.socket(socket.AF_INET, socket.SOCK_DGRAM)]][0][1]]) if l][0][0]
+	server_address = (localhost, port)
+	print('Server: Connecting to {} port {}'.format(*server_address))
+	sock.connect(server_address)	
+	cont = 1		
+	start = time.time()
+	try:		
+		while cont:
+			# Send n,m,N,Kc,Kw,T
+			data = send_plain_data([n,m,N,Kc,Kw,T])
+			sock.sendall(struct.pack('>i', len(data))+data.encode('utf-8'))
+			U = encrypt_vector(pubkey,fp_vector(U))
+			z = [u*(2**lf) for u in U]
+			K = Kc
+			for i in range(0,T):
+				# Receive [[x0]]
+				data = json.loads(recv_size(sock))
+				x0 = get_enc_data(data,pubkey)
+				server.compute_coeff(x0)				
+				for k in range(0,K):
+					print(k)
+					t = server.t_iterate(z)
+					# Send [[t_k]]
+					data = send_encr_data(t)
+					sock.sendall(struct.pack('>i', len(data))+data.encode('utf-8'))
+					# Receive new [[U_{k+1}]]
+					data = json.loads(recv_size(sock))
+					new_U = get_enc_data(data,pubkey)
+					z = server.z_iterate(new_U,U)
+					U = new_U
+				U = list(U[m:]) + list([pubkey.encrypt(0)]*m)
+				z = [el*2**lf for el in U] 
+				K = Kw
+			cont = 0
+		print(time.time() - start)
+	finally:
+		print('Server: Closing socket')
+		sock.close()
 
 
 if __name__ == '__main__':
-    main()
+	main()
