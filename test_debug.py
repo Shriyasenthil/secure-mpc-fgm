@@ -6,11 +6,11 @@ from gmpy2 import mpz
 import argparse
 
 def debug_encrypt_decrypt():
-    """First, verify basic encryption/decryption works"""
+  
     lf = 16
     privkey, pubkey = labhe.Init(2048)
     
-    print("=== Testing Basic Encryption/Decryption ===")
+    print("TestingEncryption/Decryption =")
     test_vals = [1.0, 2.0, -1.0, 0.5]
     
     for val in test_vals:
@@ -19,21 +19,20 @@ def debug_encrypt_decrypt():
         print(f"Original: {val}, Decrypted: {decrypted}, Diff: {abs(val - decrypted)}")
         
         if abs(val - decrypted) > 1e-3:
-            print("❌ Basic encryption/decryption is broken!")
+            print("Basic encryption/decryption is broken!")
             return False
     
-    print("✅ Basic encryption/decryption works")
+    print("Basic encryption/decryption works")
     return True
 
 def debug_scalar_multiplication():
-    """Test scalar multiplication step by step"""
     lf = 16
     scale = 1 << lf
     privkey, pubkey = labhe.Init(2048)
     
-    print("\n=== Testing Scalar Multiplication ===")
+    print("\nTesting Scalar Multiplication")
     
-    # Test 1: Simple integer multiplication
+    # Test 1: Normal multiplication
     ct = labhe.encrypt(2.0, "test", lf)
     result_ct = labhe.Eval_mult_scalar(pubkey, ct, 3)  # 2.0 * 3 = 6.0
     result = labhe.decrypt(privkey, result_ct, lf)
@@ -45,28 +44,28 @@ def debug_scalar_multiplication():
     print(f"2.0 * 1 = {result} (expected: 2.0)")
     
     # Test 3: Problematic scaling
-    print("\n--- Testing problematic scaling ---")
+    print("\nTesting problematic scaling ")
     problematic_scalar = int(round(1.0 * scale))
     print(f"Problematic scalar (scaled again): {problematic_scalar}")
     
     result_ct = labhe.Eval_mult_scalar(pubkey, ct, problematic_scalar)
     result = labhe.decrypt(privkey, result_ct, lf)
-    print(f"2.0 * {problematic_scalar} = {result} (⚠ expected to be huge)")
+    print(f"2.0 * {problematic_scalar} = {result} (expected to be huge)")
 
     if abs(result) > 1e6:
-        print("  ⚠️  WRONG METHOD exploded!")
+        print("WRONG METHOD exploded!")
     else:
-        print("  ✅ WRONG METHOD unexpectedly stable")
+        print("WRONG METHOD unexpectedly stable")
 
-    print("✅ Scalar multiplication test completed.")
+    print("Scalar multiplication test completed.")
 
 def debug_matrix_vector_step_by_step():
-    """Debug matrix-vector multiplication step by step"""
+    
     lf = 16
     scale = 1 << lf
     privkey, pubkey = labhe.Init(2048)
     
-    print("\n=== Testing Matrix-Vector Multiplication Step-by-Step ===")
+    print("\nTesting Matrix-Vector Multiplication ")
     
     I = np.array([[1.0, 0.0], [0.0, 1.0]])
     vec = [1.0, 2.0]
@@ -74,7 +73,7 @@ def debug_matrix_vector_step_by_step():
     print(f"Matrix:\n{I}")
     print(f"Vector: {vec}")
     
-    # Encrypt the vector
+    # Encrypt 
     enc_vec = []
     for i, x in enumerate(vec):
         ct = labhe.encrypt(x, f"vec_{i}", lf)
@@ -83,7 +82,7 @@ def debug_matrix_vector_step_by_step():
         enc_vec.append(ct)
     
     # Matrix-vector multiplication
-    print("\n--- Manual matrix-vector multiplication ---")
+    print("\n matrix-vector multiplication ")
     result = []
     
     for i, row in enumerate(I):
@@ -96,7 +95,7 @@ def debug_matrix_vector_step_by_step():
                 print("    Skipping zero element")
                 continue
             
-            wrong_scalar = int(round(scalar * scale))  # old broken way
+            wrong_scalar = int(round(scalar * scale))  # old way
             right_scalar = int(round(scalar))           # correct fixed-point way
             
             print(f"    Wrong scalar (old method): {wrong_scalar}")
@@ -108,11 +107,11 @@ def debug_matrix_vector_step_by_step():
             decrypted_wrong = labhe.decrypt(privkey, prod_wrong, lf)
             decrypted_right = labhe.decrypt(privkey, prod_right, lf)
             
-            print(f"    ❌ Wrong result: {decrypted_wrong}")
-            print(f"    ✅ Right result: {decrypted_right}")
+            print(f"Wrong result: {decrypted_wrong}")
+            print(f"Right result: {decrypted_right}")
             
             if abs(decrypted_wrong) > 1e6:
-                print("    ⚠️  WRONG METHOD exploded!")
+                print("WRONG METHOD exploded!")
             if acc is None:
                 acc = prod_right
             else:
@@ -133,7 +132,7 @@ def debug_matrix_vector_step_by_step():
     print(f"\nInput vector: {vec}")
     print(f"Output vector: {final_result}")
     print(f"Expected (I * vec): {vec}")
-    print("✅ Matrix-vector multiplication test completed.")
+    print("Matrix-vector multiplication test completed.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

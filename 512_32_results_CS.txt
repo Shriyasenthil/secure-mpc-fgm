@@ -1,3 +1,6 @@
 5, 5, 7, 50, 20, 1: total time 2.21 
 avg. time FGM iteration for client: 0.010
 avg. time FGM iteration for cloud: 0.034
+5, 5, 7, 50, 20, 1: total time 2.22 
+avg. time FGM iteration for client: 0.009
+avg. time FGM iteration for cloud: 0.035

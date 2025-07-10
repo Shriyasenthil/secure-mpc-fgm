@@ -17,20 +17,9 @@ except ImportError:
     HAVE_GMP = False
 
 DEFAULT_KEYSIZE = 1024
-"""We take the convention that a number x < N/3 is positive, and that a number x > 2N/3 is negative. 
-The range N/3 < x < 2N/3 allows for overflow detection."""
-
-
-"""The LabHE 'public key' is composed from the Paillier public key and the client's
-secret key. It is not a public key in the usual sense because a secret key is needed 
-in order to encrypt a message - through the PRF. The LabHE private key is composed 
-of the Paillier secret key and the clients' public keys"""
 
 def generate_LabHE_keypair(usk, n_length=DEFAULT_KEYSIZE):
-    """Return a new :class:`LabHEPublicKey` and :class:`LabHEPrivateKey`.
-    Composed from a master public key mpk and a master secret key msk that 
-    corespond to the Paillier keys
-    """
+   
     mpk, msk = paillier.generate_paillier_keypair(None,n_length)
     # lsk = msk, mpk.encrypt(usk)
     # lpk = mpk, usk
@@ -52,12 +41,7 @@ def Init():
 
 
 class LabHEPublicKey(object):
-    """Composed of PaillierPublicKey 
-
-    Attributes:
-      mpk (PaillierPublicKey): the public key of the underlying Paillier scheme
-      max_int (int): n/3, the maximum positive value a plaintext can be
-    """
+    
     def __init__(self, mpk):
         self.Pai_key = mpk
         self.n = mpk.n
@@ -68,20 +52,7 @@ class LabHEPublicKey(object):
         return self.Pai_key.nsquare  # ✅ This will fix the AttributeError
 
     def offline_gen_secret(self, label, usk):
-        """LabHE  generation of a secret from a label 
-            with a pseudorandom function, in this case sha3_224. Change the 
-        PRF as desired.
-
-        Args:
-          plaintext (label): a positive integer < :attr:`n` that uniquely 
-          identifies a plaintext that will be encrypted online.
-            unique
-          usk (int): a positive integer representing the key for a PRF.
-
-        Returns:
-          int: secret = PRF(usk,label)
-
-        """
+        
         self.usk = usk  
         hash = hashlib.sha3_224()
         hash.update(('%s%s' % (bin(usk).encode('utf-8'), bin(label).encode('utf-8'))).encode('utf-8'))
@@ -89,26 +60,10 @@ class LabHEPublicKey(object):
         return secret
 
     def offline_encrypt(self, secret):
-        """LabHE offline encryption of the secret"""
+ 
 
     def encrypt(self, plaintext, secret, enc_secret=None, r_value=None):
-        """LabHE online encryption of a positive integer plaintext < :attr:`n`.
-
-        Args:
-          plaintext (int): a positive integer < :attr:`n` to be splitted 
-            between the secret below and plaintext - secret
-          secret (int): a positive integer < :attr:`n which will be 
-            Paillier encrypted
-          r_value (int): obfuscator for the ciphertext; by default (i.e.
-            r_value is None), a random value is used.
-
-        Returns:
-          int: splitted plaintext: plaintext - secret,
-          int: Paillier encryption of secret.
-
-        Raises:
-          TypeError: if plaintext, secret are not an int or mpz.
-        """
+ 
         if not isinstance(secret, int) and not isinstance(secret, type(mpz(1))) and not isinstance(secret, numpy.integer):
             raise TypeError('Expected int type secret but got: %s' %
                             type(secret))
@@ -127,21 +82,7 @@ class LabHEPublicKey(object):
 
 
 class LabHEPrivateKey(object):
-    """Contains the Paillier private key, the client public key and associated decryption method.
-
-    Args:
-      public_key (:class:`PaillierPublicKey`): The corresponding public
-        key.
-      p (int): private secret - see Paillier's paper.
-      q (int): private secret - see Paillier's paper.
-
-    Attributes:
-      msk (PaillierPrivateKey): The private key of the underlying Paillier scheme.
-      upk (int): Client's public key - can be a vector if there are more clients
-      usk (int): Client's secret key - can be a vector if there are more clients
-      n (int): Paillier modulus
-      
-    """
+ 
     def __init__(self, msk, upk):
         self.msk = msk
         self.upk = upk
@@ -157,22 +98,7 @@ class LabHEPrivateKey(object):
         return "<LabHEPrivateKey for {}>".format(pub_repr)
 
     def decrypt(self, encrypted_number, secret=None):
-        """Return the decrypted & decoded plaintext of *encrypted_number*.
-
-        Args:
-          encrypted_number (LabEncryptedNumber): an
-            :class:`LabEncryptedNumber` with a public key that matches this
-            private key.
-
-        Returns:
-          the int or float that `LabEncryptedNumber` was holding. 
-
-        Raises:
-          TypeError: If *encrypted_number* is not an
-            :class:`LabEncryptedNumber`.
-          ValueError: If *encrypted_number* was encrypted against a
-            different key.
-        """
+     
         if not isinstance(encrypted_number, LabEncryptedNumber) and not isinstance(encrypted_number, paillier.EncryptedNumber): 
             raise TypeError('Expected encrypted_number to be an LabEncryptedNumber or paillier.EncryptedNumber'
                             ' not: %s' % type(encrypted_number))
@@ -193,10 +119,7 @@ class LabHEPrivateKey(object):
             else:
                 if isinstance(secret, paillier.EncryptedNumber):
                     secret = self.raw_offline_decrypt(secret)
-                # secret = self.raw_offline_decrypt(encrypted_number.ciphertext[1])+secret
-            # Need to distinguish when a secret is given as a plaintext to avoid decryption and
-            # when another secret is given to make up for a function applied over the secrets that 
-            # correspond with a Paillier ciphertext. Until then, add the secret separately
+
             
             ciphertext = encrypted_number.ciphertext[0]
         else:
@@ -211,20 +134,7 @@ class LabHEPrivateKey(object):
 
 
     def raw_decrypt(self, ciphertext, secret):
-        """Decrypt raw ciphertext and return raw plaintext.
-
-        Args:
-          ciphertext (int): plaintext - secret, second part 
-            is encrypted secret (usually from :meth:`raw_offline_decrypt`)
-            that is to be Paillier decrypted.
-
-        Returns:
-          int: decryption of the LabHE ciphertext. This is a positive
-          integer < :attr:`public_key.n`.
-
-        Raises:
-          TypeError: if the ciphertext is not int.
-        """
+     
         if not isinstance(ciphertext, int) and not isinstance(ciphertext, type(mpz(1))) and not isinstance(ciphertext, numpy.int64):
             raise TypeError('Expected ciphertext to be an int, not: %s' %
                 type(ciphertext))
@@ -237,65 +147,12 @@ class LabHEPrivateKey(object):
             return int(value - self.n)
 
     def raw_offline_decrypt(self, encr_secret):
-        """Offline decryption of the secret.
-
-        Args:
-          encr_secret (int): Paillier encryption of result of the 
-          program ran on the input secrets, that is to be Paillier decrypted.
-
-        Returns:
-          int: secret. This is a positive integer < :attr:`public_key.n`.
-
-        Raises:
-          TypeError: if the encr_secret are not int.
-        """
+   
         secret = self.msk.decrypt(encr_secret)
         return secret
 
 class LabEncryptedNumber(object):
-    """Represents the LabHE encryption of an int.
-
-    Typically, an `LabEncryptedNumber` is created by
-    :meth:`LabHEPublicKey.encrypt`. You would only instantiate an
-    `LabEncryptedNumber` manually if you are de-serializing a number
-    someone else encrypted.
-
-
-    LabHE encryption and the Paillier underlying scheme are only 
-    defined for non-negative integers less than 
-    :attr:`PaillierPublicKey.n`. :class:`EncodedNumber` provides
-    an encoding scheme for and signed integers that is compatible 
-    with the partially homomorphic properties of the Paillier
-    cryptosystem:
-
-    1. D(E(a) * E(b)) = a + b
-    2. D(E(a)**b)     = a * b
-
-    where `a` and `b` are ints, `E` represents encoding then
-    encryption, and `D` represents decryption then decoding for 
-    the Paillier scheme.
-
-    The LabHE scheme allows additions and multiplications between 
-    encrypted data and/or plaintext data.
-
-    The extended LabHE scheme allows the evaluation of degree-d 
-    polynomials on encrypted data, as long as the extra data 
-    necessary is provided, see paper Alexandru et al 2018.
-
-    Args:
-      mpk (PaillierPublicKey): the :class:`PaillierPublicKey`
-        against which the number was encrypted.
-      ciphertext (int, int ): encrypted representation of the encoded 
-        number.
-
-    Attributes:
-      mpk (PaillierPublicKey): the :class:`PaillierPublicKey`
-        against which the number was encrypted.
-
-    Raises:
-      TypeError: if *ciphertext* is not an (int, int), or if *public_key* is
-        not a :class:`PaillierPublicKey`.
-    """
+  
 
     ####### There are two types of ciphertexts, beware! LabEncryptedNumber and paillier.EncryptedNumber
     def __init__(self, mpk, ciphertext):
@@ -314,9 +171,7 @@ class LabEncryptedNumber(object):
             return self._add_scalar(other)
 
     def __radd__(self, other):
-        """Called when Python evaluates `34 + <LabEncryptedNumber>`
-        Required for builtin `sum` to work.
-        """
+      
         return self.__add__(other)
     
 
@@ -371,25 +226,9 @@ class LabEncryptedNumber:
     def __truediv__(self, scalar):
         return self.__mul__(1 / scalar)
 
-    # def ciphertext(self):
-    #     """Return the ciphertext of the LabEncryptedNumber.
-
-    #     Returns:
-    #       int, int , the ciphertext. 
-    #     """
-    #     return self.ciphertext
 
     def _add_scalar(self, scalar):
-        """Returns E(a + b), given self=E(a) and b.
-
-        Args:
-          scalar: an int b, to be added to `self`.
-
-        Returns:
-          LabEncryptedNumber: if E(a) = (a-s,[[s]]), return 
-          (a + b - s,[[s]]), else if E(a) = [[a]], return 
-          Pai_add([[a]],[[b]])
-        """
+ 
 
         a, b = self.ciphertext, scalar
 
@@ -400,23 +239,7 @@ class LabEncryptedNumber:
         return LabEncryptedNumber(self.mpk, sum_ciphertext)
 
     def _add_encrypted(self, other):
-        """Returns E(a + b) given E(a) and E(b).
-
-        Args:
-          other (LabEncryptedNumber): an `LabEncryptedNumber` to add to self.
-
-        Returns:
-          LabEncryptedNumber: if E(a) = (a-s,[[s]]) and E(b) = (b-t,[[t]]), 
-          return (a + b - s - t,Pai_add([[s]],[[t]])), else if E(a) = 
-          (a - s,[[s]]) and E(b) = [[b]], return (a - s, Pai_add([[s]],[[b]])), 
-          else if E(a) = [[a]] and E(b) = (b - s,[[s]]) , return 
-          (b - s, Pai_add([[s]],[[a])), else if E(a) = [[a]] and E(b) = [[b]], 
-          return Pai_add([[a]],[[b]])
-
-        Raises:
-          ValueError: if numbers were encrypted against different keys.
-        """
-
+  
         if isinstance(self, LabEncryptedNumber) & isinstance(other, LabEncryptedNumber):
             if self.mpk != other.mpk :
                 raise ValueError("Attempted to add numbers encrypted against "
@@ -450,22 +273,7 @@ class LabEncryptedNumber:
 
 
     def _mul_scalar(self, plaintext):
-        """Returns the E(a * plaintext), where E(a) = ciphertext
-
-        Args:
-          plaintext (int): number by which to multiply the
-            `LabEncryptedNumber`. *plaintext* is typically an encoding.
-            0 <= *plaintext* < :attr:`~PaillierPublicKey.n`
-
-        Returns:
-          LabEncryptedNumber: if E(a) = (a-s,[[s]]), return ((a-s)b,Pai_mult([[s]],b)),
-            else if E(a) = [[a]], return Pai_mult([[a]],b)
-
-        Raises:
-          TypeError: if *plaintext* is not an int.
-          ValueError: if *plaintext* is not between 0 and
-            :attr:`PaillierPublicKey.n`.
-        """
+   
         if not isinstance(plaintext, int) and not isinstance(plaintext, type(mpz(1))) and not isinstance(plaintext, numpy.int64):
             raise TypeError('Expected ciphertext to be int, not %s' %
                 type(plaintext))
@@ -482,21 +290,7 @@ class LabEncryptedNumber:
         return LabEncryptedNumber(self.mpk, prod_ciphertext)
 
     def _mul_encrypted(self, other):
-        """Returns the Paillier encryption [[a*b-st]], given E(a) = (a-s,[[s]]) 
-            and E(b) = (b-t,[[t]])
-
-        Args:
-          ciphertext (int,int): number by which to multiply the
-            `LabEncryptedNumber`. 
-
-        Returns:
-          PaillierEncryptedNumber: return [[(a-s)(b-t)]] + Pai_mult([[t]],a-s) + 
-            + Pai_mult([[s]],b-t)
-
-        Raises:
-          TypeError: if *self* or*other* is not a full ciphertext (int,int).
-
-        """
+       
 
         a, b = self.ciphertext, other.ciphertext
 
@@ -513,22 +307,7 @@ class LabEncryptedNumber:
         return prod_ciphertext
 
     def mlt3(self, other1, other2, extra):
-        """Returns the integer [[a * b * c - s * t * u]], given E(a) = (a-s,[[s]]), 
-            E(b) = (b-t,[[t]]) and E(c) = (c-u,[[u]]), along with 
-            [[s*t]], [[s*u]],[[t*u]]
-
-        Args:
-          self, other1,other2 are (int,[[int]]), extra is ([[int]],[[int]],[[int]])
-
-        Returns:
-          PaillierEncryptedNumber: return [[(a-s)(b-t)(c-u)]] + Pai_mult([[tu]],a-s) + 
-            + Pai_mult([[su]],b-t) + Pai_mult([[st]],c-u) + Pai_mult([[u]],(a-s)*(b-t)) +
-            Pai_mult([[t]],(a-s)*(c-u)) + Pai_mult([[s]],(b-t)*(c-u))
-
-        Raises:
-          TypeError: if *self* or*other* is not a full ciphertext (int,int).
-
-        """
+        
         if isinstance(other1, LabEncryptedNumber) and isinstance(other2, LabEncryptedNumber):
             if (isinstance(extra[0], paillier.EncryptedNumber) and isinstance(extra[1], paillier.EncryptedNumber) 
               and isinstance(extra[2], paillier.EncryptedNumber)):
@@ -560,21 +339,7 @@ class LabEncryptedNumber:
 
 # To merge with mlt3
     def mlt4(self, other1, other2, other3, extra):
-        """Returns the integer [[a * b * c * d - s * t * u * v]], given E(a) = (a-s,[[s]]), 
-            E(b) = (b-t,[[t]]) and E(c) = (c-u,[[u]]), E(d-v,[[v]]) along with 
-            [[s*t]], [[s*u]], [[s*v]], [[t*u]], [[t*v]], [[u*v]], [[s*t*u]], [[s*t*v]], 
-            [[s*u*v]], [[t*u*v]]
-
-        Args:
-          self, other1,other2,other3 are (int,[[int]]), extra is ([[int]],[[int]],[[int]])
-
-        Returns:
-          PaillierEncryptedNumber: return [[a * b * c * d - s * t * u * v]]
-
-        Raises:
-          TypeError: if *self* or*other* is not a full ciphertext (int,int).
-
-        """
+      
         if (isinstance(other1, LabEncryptedNumber) and isinstance(other2, LabEncryptedNumber) and
              isinstance(other2, LabEncryptedNumber)):
             len_extra = len(extra)
@@ -604,13 +369,6 @@ class LabEncryptedNumber:
         return prod_ciphertext
     
 def generate_secret(pubkey):
-    """Generate a secret (usk) for LabHE encryption.
-
-    Args:
-        pubkey (LabHEPublicKey): LabHE public key.
-
-    Returns:
-        int: Secret key usk (a random int < pubkey.n).
-    """
+    
     return random.randint(1, pubkey.n // 3)
 

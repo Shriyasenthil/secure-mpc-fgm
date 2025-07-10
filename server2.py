@@ -13,18 +13,16 @@ import genDGK
 import os
 
 
-DEFAULT_KEYSIZE = 512						# set here the default number of bits of the RSA modulus
-DEFAULT_MSGSIZE = 64 						# set here the default number of bits the plaintext can have
-DEFAULT_SECURITYSIZE = 100					# set here the default number of bits for the one time pads
-DEFAULT_PRECISION = int(DEFAULT_MSGSIZE/2)	# set here the default number of fractional bits
-DEFAULT_DGK = 160							# set here the default security size of DGK
-# The message size of DGK has to be greater than 2*log2(DEFAULT_MSGSIZE), check u in DGK_pubkey
-KEYSIZE_DGK = 512							# set here the default number of bits of the RSA modulus for DGK
-MSGSIZE_DGK = 20							# set here the default number of bits the plaintext in DGK can have (only bits will be encrypted)
+DEFAULT_KEYSIZE = 512						
+DEFAULT_MSGSIZE = 64 						
+DEFAULT_SECURITYSIZE = 100					
+DEFAULT_PRECISION = int(DEFAULT_MSGSIZE/2)	
+DEFAULT_DGK = 160							
+KEYSIZE_DGK = 512						
+MSGSIZE_DGK = 20							
 NETWORK_DELAY = 0 		
 
-seed = 43	# pick a seed for the random generator
-
+seed = 43	
 
 try:
     import gmpy2
@@ -52,10 +50,10 @@ def sum_encrypted_vectors(x, y):
 def diff_encrypted_vectors(x, y):
 	return [x[i] - y[i] for i in range(len(x))] 
 
-def mul_sc_encrypted_vectors(x, y): # x is encrypted, y is plaintext
+def mul_sc_encrypted_vectors(x, y):
     return [y[i]*x[i] for i in range(len(x))]    
 
-def dot_sc_encrypted_vectors(x, y): # x is encrypted, y is plaintext
+def dot_sc_encrypted_vectors(x, y): 
     return sum(mul_sc_encrypted_vectors(x,y))
 
 def dot_m_encrypted_vectors(x, A):
@@ -143,7 +141,7 @@ class Server2:
 		self.generate_DGK()
 
 
-	def params(self,n,m,N,Kc,Kw,T):	### CHECK SIZES FOR COINS
+	def params(self,n,m,N,Kc,Kw,T):	
 		self.Kc = Kc
 		self.Kw = Kw
 		nc = m*N
@@ -244,7 +242,7 @@ def get_plain_data(data):
 	return [int(x) for x in data]
 
 def recv_size(the_socket):
-	#data length is packed into 4 bytes
+	#data length is 4 bytes
 	total_len=0;total_data=[];size=sys.maxsize
 	size_data=sock_data=bytes([]);recv_size= 4096 
 	while total_len<size:
@@ -288,7 +286,7 @@ def get_DGK_matrix(received_dict):
 	return [[mpz(y) for y in x] for x in received_dict]
 
 def main():
-	# Make sure the default parameters are the same as in server1.py
+	
 	lf = DEFAULT_PRECISION
 	s2 = Server2()
 	l = s2.l
@@ -297,7 +295,7 @@ def main():
 	DGK_pubkey = s2.DGK_pubkey
 	serialized_pubkey = keys(DGK_pubkey)
 
-	# Create a TCP/IP socket
+	# TCP/IP socket
 	sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 	print('Server2: Socket successfully created')
 	port = 10000
@@ -307,7 +305,7 @@ def main():
 	print('Server2: Starting up on {} port {}'.format(*server_address))
 	sock.bind(server_address)
 
-	# Listen for incoming connections
+
 	sock.listen(1)      
 	print('Server2: Socket is listening')
 	connection, client_address = sock.accept()	
@@ -401,7 +399,5 @@ def main():
 		print('Server2: Closing socket')
 		connection.close()				
 
-
-# main()
 if __name__ == '__main__':
 	main()

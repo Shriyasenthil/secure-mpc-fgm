@@ -9,12 +9,12 @@ labhe.pubkey = pubkey
 lf = 16
 scale = 1 << lf
 
-# Encrypt value
+# Encrypt
 plaintext = 1.0
 label = "test"
 ct = labhe.encrypt(plaintext, label, lf=lf)
 
-# Test with scalar = 1 (should give same result)
+# Test with scalar = 1 
 print("=== DIAGNOSTIC TEST ===")
 raw_original = labhe.D(privkey, ct)
 print(f"Original: {raw_original}")

@@ -16,13 +16,13 @@ try:
 except ImportError:
 	HAVE_GMP = False
 
-DEFAULT_KEYSIZE = 512						# set here the default number of bits of the RSA modulus
-DEFAULT_MSGSIZE = 64 						# set here the default number of bits the plaintext can have
-DEFAULT_SECURITYSIZE = 100					# set here the default number of bits for the one time pads
-DEFAULT_PRECISION = int(DEFAULT_MSGSIZE/2)	# set here the default number of fractional bits
-NETWORK_DELAY = 0 							# set here the default network delay
+DEFAULT_KEYSIZE = 512					        
+DEFAULT_MSGSIZE = 64 					    
+DEFAULT_SECURITYSIZE = 100				        
+DEFAULT_PRECISION = int(DEFAULT_MSGSIZE/2)     
+NETWORK_DELAY = 0
 
-seed = 42	# pick a seed for the random generator
+seed = 42	
 
 def encrypt_vector(pubkey, x, coins=None):
 	if (coins==None):
@@ -126,7 +126,7 @@ def send_plain_data(data):
 	return json.dumps([str(x) for x in data])
 
 def recv_size(the_socket):
-	#data length is packed into 4 bytes
+	#data length packed into 4 bytes
 	total_len=0;total_data=[];size=sys.maxsize
 	size_data=sock_data=bytes([]);recv_size=4096
 	while total_len<size:
@@ -154,13 +154,13 @@ def get_plain_data(data):
 
 def main():
 
-	# Make sure the same parameters are in server.py
+	
 	lf = DEFAULT_PRECISION
 	client = Client()
 	pubkey = client.pubkey
 	privkey = client.privkey
 
-	# Create a TCP/IP socket
+	# TCP/IP socket
 	sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 	print('Client: Socket successfully created')
 	port = 10000
@@ -208,7 +208,6 @@ def main():
 				time_x0 = time.time() - start
 				start_cloud = time.time()
 				for k in range(0,K):
-					# print(k)
 					# Receive [[t_k]]
 					data = json.loads(recv_size(connection))
 					time_cloud[k] = time.time() - start_cloud
@@ -244,7 +243,6 @@ def main():
 
 
 	finally:
-	# Clean up the connection
 		print('Client: Closing connection')
 		connection.close()
 

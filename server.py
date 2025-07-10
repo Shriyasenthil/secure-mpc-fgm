@@ -14,13 +14,13 @@ try:
 except ImportError:
 	HAVE_GMP = False
 
-DEFAULT_KEYSIZE = 512						# set here the default number of bits of the RSA modulus
-DEFAULT_MSGSIZE = 64 						# set here the default number of bits the plaintext can have
-DEFAULT_SECURITYSIZE = 100					# set here the default number of bits for the one time pads
-DEFAULT_PRECISION = int(DEFAULT_MSGSIZE/2)	# set here the default number of fractional bits
-NETWORK_DELAY = 0 							# set here the default network delay
+DEFAULT_KEYSIZE = 512						
+DEFAULT_MSGSIZE = 64 						
+DEFAULT_SECURITYSIZE = 100					
+DEFAULT_PRECISION = int(DEFAULT_MSGSIZE/2)	
+NETWORK_DELAY = 0 							
 
-seed = 42	# pick a seed for the random generator
+seed = 42	
 
 def encrypt_vector(pubkey, x, coins=None):
 	if (coins==None):
@@ -30,8 +30,6 @@ def encrypt_vector(pubkey, x, coins=None):
 def sum_encrypted_vectors(x, y):
 	return [x[i] + y[i] for i in range(np.size(x))]
 
-"""We take the convention that a number x < N/3 is positive, and that a number x > 2N/3 is negative. 
-	The range N/3 < x < 2N/3 allows for overflow detection.""" 
 
 def Q_s(scalar,prec=DEFAULT_PRECISION):
 	return int(scalar*(2**prec))/(2**prec)
@@ -131,7 +129,7 @@ def send_plain_data(data):
 	return json.dumps([str(x) for x in data])
 
 def recv_size(the_socket):
-	#data length is packed into 4 bytes
+	#data length is 4 bytes
 	total_len=0;total_data=[];size=sys.maxsize
 	size_data=sock_data=bytes([]);recv_size=4096
 	while total_len<size:
@@ -154,25 +152,25 @@ def get_enc_data(received_dict,pubkey):
 	return [paillier.EncryptedNumber(pubkey, int(x)) for x in received_dict]
 
 def main():
-	# Make sure the default parameters are the same as in client.py
+	
 	lf = DEFAULT_PRECISION
-	n = 5	# set the number of states
-	m = 5	# set the number of control inputs
-	N = 7	# set the horizon length
-	T = 1 	# set the number of time steps
+	m = 5
+	n = 5	
+	N = 7
+	T = 1 	
 	server = Server(n,m,N)
-	server.Kc = 50; server.Kw = 20	# set the number of cold start iterations and warm start iterations
+	server.Kc = 50; server.Kw = 20	
 	Kc = server.Kc; Kw = server.Kw
 	nc = server.nc
 	server.m = m
 	pubkey = server.pubkey
 	U = [0]*nc
 
-	# Create a TCP/IP socket
+	# TCP/IP socket
 	sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 	port = 10000
 
-	# Connect the socket to the port where the server is listening
+	# Connect the socket to the port 
 	localhost = [l for l in ([ip for ip in socket.gethostbyname_ex(socket.gethostname())[2] if not ip.startswith("127.")][:1], [[(s.connect(('8.8.8.8', 53)), s.getsockname()[0], s.close()) for s in [socket.socket(socket.AF_INET, socket.SOCK_DGRAM)]][0][1]]) if l][0][0]
 	server_address = (localhost, port)
 	print('Server: Connecting to {} port {}'.format(*server_address))

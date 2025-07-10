@@ -12,15 +12,15 @@ from pathlib import Path
 import os
 
 
-DEFAULT_KEYSIZE = 512						# set here the default number of bits of the RSA modulus
-DEFAULT_MSGSIZE = 64 						# set here the default number of bits the plaintext can have
-DEFAULT_SECURITYSIZE = 100					# set here the default number of bits for the one time pads
-DEFAULT_PRECISION = int(DEFAULT_MSGSIZE/2)	# set here the default number of fractional bits
-DEFAULT_DGK = 160							# set here the default security size of DGK
-# The message size of DGK has to be greater than 2*log2(DEFAULT_MSGSIZE), check u in DGK_pubkey
-NETWORK_DELAY = 0 							# set here the default network delay
+DEFAULT_KEYSIZE = 512						
+DEFAULT_MSGSIZE = 64 						
+DEFAULT_SECURITYSIZE = 100					
+DEFAULT_PRECISION = int(DEFAULT_MSGSIZE/2)	
+DEFAULT_DGK = 160							
 
-seed = 42	# pick a seed for the random generator
+NETWORK_DELAY = 0 							
+
+seed = 42	
 
 try:
     import gmpy2
@@ -49,10 +49,10 @@ def sum_encrypted_vectors(x, y):
 def diff_encrypted_vectors(x, y):
 	return [x[i] - y[i] for i in range(len(x))] 
 
-def mul_sc_encrypted_vectors(x, y): # x is encrypted, y is plaintext
+def mul_sc_encrypted_vectors(x, y): 
     return [y[i]*x[i] for i in range(len(x))]    
 
-def dot_sc_encrypted_vectors(x, y): # x is encrypted, y is plaintext
+def dot_sc_encrypted_vectors(x, y): 
     return sum(mul_sc_encrypted_vectors(x,y))
 
 def dot_m_encrypted_vectors(x, A):
@@ -65,9 +65,6 @@ def encrypt_vector_DGK(pubkey, x, coins=None):
 
 def decrypt_vector_DGK(privkey, x):
     return np.array([privkey.raw_decrypt0(i) for i in x])
-
-"""We take the convention that a number x < N/3 is positive, and that a number x > 2N/3 is negative. 
-	The range N/3 < x < 2N/3 allows for overflow detection.""" 
 
 def Q_s(scalar,prec=DEFAULT_PRECISION):
 	return int(scalar*(2**prec))/(2**prec)
@@ -106,15 +103,7 @@ def retrieve_fp_matrix(mat,prec=DEFAULT_PRECISION):
 
 class Client:
 	def __init__(self, l=DEFAULT_MSGSIZE):
-		"""This would generate the keys on the spot"""
-		# keypair = paillier.generate_paillier_keypair(n_length=DEFAULT_KEYSIZE)
-		# self.pubkey, self.privkey = keypair
-		# file = 'Keys/pubkey'+str(DEFAULT_KEYSIZE)+".txt"
-		# with open(file, 'w') as f:
-		# 	f.write("%d" % (self.pubkey.n))
-		# file = 'Keys/privkey'+str(DEFAULT_KEYSIZE)+".txt"			
-		# with open(file, 'w') as f:
-		# 	f.write("%d\n%d" % (self.privkey.p,self.privkey.q))
+		
 		filepub = "Keys/pubkey"+str(DEFAULT_KEYSIZE)+".txt"
 		with open(filepub, 'r') as fin:
 			data=[line.split() for line in fin]
@@ -196,7 +185,7 @@ class Server1:
 		coeff_z = np.eye(nc) - Hf;
 		self.coeff_z = fp_matrix(coeff_z)
 
-	def gen_rands(self,DGK_pubkey): ### CHECK SIZES
+	def gen_rands(self,DGK_pubkey):
 		self.DGK_pubkey = DGK_pubkey
 		T = self.T
 		nc = self.nc
@@ -245,7 +234,7 @@ class Server1:
 			rn = [gmpy2.mpz_urandomb(random_state,l+2*lf+sigma) for i in range(0,nc*Kc + nc*Kw*(T-1))]
 		self.fixedNoise = encrypt_vector(self.pubkey, rn) # ,coinsP[-2*nc*K:])
 		er = [-fp(x,-2*lf) for x in rn]
-		er = encrypt_vector(self.pubkey,er) # ,coinsP[-2*nc*K:-nc*K])
+		er = encrypt_vector(self.pubkey,er) #coinsP[-2*nc*K:-nc*K])
 		self.er = er
 		# coinsP = coinsP[:-3*nc*K]
 		self.coinsP = coinsP
@@ -278,7 +267,6 @@ class Server1:
 			a[i],b[i] = np.random.permutation([limit[i]+self.pubkey.encrypt(0),self.t[i]])
 		self.a = a
 		self.b = b
-		# a and b have to be numbers of l bits
 		return self.a,self.b
 
 	def init_comparison_s1(self,limit):
@@ -336,7 +324,7 @@ class Server1:
 			self.delta_A[k] = delta_A
 			prod = [0]*l
 			c = [DGK_pubkey.raw_encrypt(0)]*l
-			# index 0 is the MSB
+
 			for i in range(0,l):
 				if (int(alpha[i]) == 0):
 					prod[i] = beta[i]
@@ -387,7 +375,7 @@ def send_plain_data(data):
 	return json.dumps([str(x) for x in data])
 
 def recv_size(the_socket):
-	#data length is packed into 4 bytes
+	#data length 4 bytes
 	total_len=0;total_data=[];size=sys.maxsize
 	size_data=sock_data=bytes([]);recv_size= 4096
 	while total_len<size:
@@ -428,14 +416,14 @@ def get_comp_matrix(received_dict):
 	return [[mpz(y) for y in x] for x in received_dict]
 
 def main():
-	# Make sure the default parameters are the same as in server2.py
+
 	lf = DEFAULT_PRECISION
-	n = 5	# set the number of states
-	m = 5	# set the number of control inputs
-	N = 7	# set the horizon length
-	T = 1 	# set the number of time steps
+	n = 5	
+	m = 5	
+	N = 7	
+	T = 1 
 	s1 = Server1(n,m,N,T)
-	s1.Kc = 50; s1.Kw = 20	# set the number of cold start iterations and warm start iterations
+	s1.Kc = 50; s1.Kw = 20	
 	Kc = s1.Kc; Kw = s1.Kw
 	nc = s1.nc
 	pubkey = s1.pubkey
@@ -449,11 +437,11 @@ def main():
 	s1.hu = encrypt_vector(client.pubkey,fp_vector(client.hu))
 	s1.lu = encrypt_vector(client.pubkey,fp_vector(client.lu))
 
-	# Create a TCP/IP socket
+	# TCP/IP socket
 	sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 	port = 10000
 
-	# Connect the socket to the port where the server2 is listening
+	# Connect the socket to the port 
 	localhost = [l for l in ([ip for ip in socket.gethostbyname_ex(socket.gethostname())[2] if not ip.startswith("127.")][:1], [[(s.connect(('8.8.8.8', 53)), s.getsockname()[0], s.close()) for s in [socket.socket(socket.AF_INET, socket.SOCK_DGRAM)]][0][1]]) if l][0][0]
 	server_address = (localhost, port)
 	print('Server1: Connecting to {} port {}'.format(*server_address))
@@ -601,9 +589,8 @@ def main():
 			cont = 0				
 
 	finally:
-	# Clean up the sock
 		print('Server1: Closing sock')
 		sock.close()
-# main()
+
 if __name__ == '__main__':
 	main()
