@@ -5,12 +5,15 @@ import sys,struct
 import json
 from gmpy2 import mpz
 import paillier
+from paillier import PaillierPublicKey,PaillierPrivateKey
 import numpy as np
 import time
 import DGK
+import util_fpv
+from util_fpv import clamp_scalar
 from pathlib import Path
 import os
-
+import labhe
 
 DEFAULT_KEYSIZE = 512						
 DEFAULT_MSGSIZE = 64 						
@@ -78,16 +81,18 @@ def Q_vector(vec,prec=DEFAULT_PRECISION):
 def Q_matrix(mat,prec=DEFAULT_PRECISION):
 	return [Q_vector(x,prec) for x in mat]
 
-def fp(scalar,prec=DEFAULT_PRECISION):
-	if prec < 0:
-		return gmpy2.t_div_2exp(mpz(scalar),-prec)
-	else: return mpz(gmpy2.mul(scalar,2**prec))
+def fp(val, lf=32, max_val=None):
+    scale = 2 ** lf
+    fixed = int(round(val * scale))
+    if max_val is not None:
+        return clamp_scalar(fixed, max_val)
+    return fixed
 
-def fp_vector(vec,prec=DEFAULT_PRECISION):
-	if np.size(vec)>1:
-		return [fp(x,prec) for x in vec]
-	else:
-		return fp(vec,prec)
+
+def fp_vector(vec, lf=32, max_val=None):
+    scale = 2 ** lf
+    return [clamp_scalar(int(round(v * scale)), max_val) if max_val is not None else int(round(v * scale)) for v in vec]
+
 
 def fp_matrix(mat,prec=DEFAULT_PRECISION):
 	return [fp_vector(x,prec) for x in mat]
@@ -101,261 +106,303 @@ def retrieve_fp_vector(vec,prec=DEFAULT_PRECISION):
 def retrieve_fp_matrix(mat,prec=DEFAULT_PRECISION):
 	return [retrieve_fp_vector(x,prec) for x in mat]
 
+
+DEFAULT_KEYSIZE = 512
+DEFAULT_MSGSIZE = 10
+
 class Client:
-	def __init__(self, l=DEFAULT_MSGSIZE):
-		
-		filepub = "Keys/pubkey"+str(DEFAULT_KEYSIZE)+".txt"
-		with open(filepub, 'r') as fin:
-			data=[line.split() for line in fin]
-		Np = mpz(data[0][0])
-		pubkey = paillier.PaillierPublicKey(n=Np)
-		self.pubkey = pubkey
+    def __init__(self, l=DEFAULT_MSGSIZE):
+        self.l = l
 
-		filepriv = "Keys/privkey"+str(DEFAULT_KEYSIZE)+".txt"
-		with open(filepriv, 'r') as fin:
-			data=[line.split() for line in fin]
-		p = mpz(data[0][0])
-		q = mpz(data[1][0])
-		self.privkey = paillier.PaillierPrivateKey(pubkey, p, q)
+        # Load public key
+        filepub = "Keys/pubkey" + str(DEFAULT_KEYSIZE) + ".txt"
+        with open(filepub, 'r') as fin:
+            data = [line.split() for line in fin]
+        Np = mpz(data[0][0])
 
-	def load_data(self,n,m,N):
-		fileparam = "Data/x0"+str(n)+"_"+str(m)+"_"+str(N)+".txt"
-		x0 = np.loadtxt(fileparam, delimiter='\n')
-		self.x0 = x0;
-		self.enc_x0 = encrypt_vector(self.pubkey,fp_vector(x0))
-		filew0 = "Data/w0"+str(n)+"_"+str(m)+"_"+str(N)+".txt"		
-		w0 = np.loadtxt(filew0, delimiter=',')
-		hu = np.concatenate([w0[2*i*m:(2*i+1)*m] for i in range(0,N)])
-		lu = np.concatenate([-w0[(2*i+1)*m:2*(i+1)*m] for i in range(0,N)])
-		self.hu = hu; self.lu = lu
-		fileA = "Data/A"+str(n)+"_"+str(m)+"_"+str(N)+".txt"
-		A = np.loadtxt(fileA, delimiter=',')
-		self.A = A
-		fileB = "Data/B"+str(n)+"_"+str(m)+"_"+str(N)+".txt"
-		B = np.loadtxt(fileB, delimiter=',')
-		self.B = B
+        # Reconstruct Paillier public and private keys
+        mpk = PaillierPublicKey(n=Np)
+        pubkey = labhe.LabHEPublicKey(mpk)
+        self.pubkey = pubkey
 
-	def closed_loop(self,u):
-		u = retrieve_fp_vector(decrypt_vector(self.privkey,u))
-		print("Last input: ", ["%.8f"% i for i in u])
-		with np.errstate(invalid='ignore'): self.x0 = np.dot(self.A,self.x0) + np.dot(self.B,u)
-		print("Next state: ", ["%.8f"% i for i in self.x0])
-		self.enc_x0 = encrypt_vector(self.pubkey,fp_vector(self.x0))
+        filepriv = "Keys/privkey" + str(DEFAULT_KEYSIZE) + ".txt"
+        with open(filepriv, 'r') as fin:
+            data = [line.split() for line in fin]
+        p = mpz(data[0][0])
+        q = mpz(data[1][0])
+        msk = PaillierPrivateKey(pubkey.Pai_key, p, q)
+
+        #Fix: Use PaillierPublicKey.encrypt() instead of raw_encrypt
+        usk = p  # Example user secret key
+        upk = [pubkey.Pai_key.encrypt(usk)]  # Must be an EncryptedNumber
+
+        # Now safe to initialize LabHEPrivateKey
+        self.privkey = labhe.LabHEPrivateKey(msk, upk)
+
+
+
+
+
+    def load_data(self, n, m, N):
+        # Load initial state x0
+        fileparam = f"Data/x0{n}_{m}_{N}.txt"
+        x0 = np.loadtxt(fileparam)
+        self.x0 = x0
+        self.enc_x0 = encrypt_vector(self.pubkey, fp_vector(x0))
+
+        # Load constraint matrix w0 and compute hu, lu
+        filew0 = f"Data/w0{n}_{m}_{N}.txt"
+        w0 = np.loadtxt(filew0, delimiter=',')
+        hu = np.concatenate([w0[2*i*m:(2*i+1)*m] for i in range(N)])
+        lu = np.concatenate([-w0[(2*i+1)*m:2*(i+1)*m] for i in range(N)])
+        self.hu = hu
+        self.lu = lu
+
+        # Load dynamics matrices A and B
+        fileA = f"Data/A{n}_{m}_{N}.txt"
+        self.A = np.loadtxt(fileA, delimiter=',')
+
+        fileB = f"Data/B{n}_{m}_{N}.txt"
+        self.B = np.loadtxt(fileB, delimiter=',')
+
+    def closed_loop(self, u):
+        u = retrieve_fp_vector(decrypt_vector(self.privkey, u))
+        print("Last input: ", ["%.8f" % i for i in u])
+        with np.errstate(invalid='ignore'):
+            self.x0 = np.dot(self.A, self.x0) + np.dot(self.B, u)
+        print("Next state: ", ["%.8f" % i for i in self.x0])
+        self.enc_x0 = encrypt_vector(self.pubkey, fp_vector(self.x0))
+
 
 
 class Server1:
-	def __init__(self,n,m,N,T,l=DEFAULT_MSGSIZE,sigma=DEFAULT_SECURITYSIZE):
-		self.l = l
-		self.sigma = sigma
-		filepub = "Keys/pubkey"+str(DEFAULT_KEYSIZE)+".txt"
-		with open(filepub, 'r') as fin:
-			data=[line.split() for line in fin]
-		Np = mpz(data[0][0])
-		self.Np = Np
-		pubkey = paillier.PaillierPublicKey(n=Np)
-		self.pubkey = pubkey	
-		self.N_len = Np.bit_length()		
-		fileH = "Data/H"+str(n)+"_"+str(m)+"_"+str(N)+".txt"
-		H = np.loadtxt(fileH, delimiter=',')
-		fileF = "Data/F"+str(n)+"_"+str(m)+"_"+str(N)+".txt"
-		F = np.loadtxt(fileF, delimiter=',')		
-		fileG0 = "Data/G0"+str(n)+"_"+str(m)+"_"+str(N)+".txt"
-		G0 = np.loadtxt(fileG0, delimiter=',')
-		fileK = "Data/K"+str(n)+"_"+str(m)+"_"+str(N)+".txt"		
-		K = np.loadtxt(fileK, delimiter=',')	
-		Kc = K[0];	Kw = K[1]
-		self.Kc = int(Kc);	self.Kw = int(Kw); self.T = T
-		self.m = m
-		nc = m*N
-		self.nc = nc
-		Hq = Q_matrix(H)
-		eigs = np.linalg.eigvals(Hq)
-		L = np.real(max(eigs))
-		mu = np.real(min(eigs))
-		cond = Q_s(L/mu)
-		eta = Q_s((np.sqrt(cond)-1)/(np.sqrt(cond)+1))
-		Hf = Q_matrix([[h/Q_s(L) for h in hv] for hv in Hq])
-		Ft = F.transpose()
-		Ff = Q_matrix([[Q_s(h)/Q_s(L) for h in hv] for hv in Ft])
-		self.eta = eta
-		self.Hf = Hf
-		mFf = np.negative(Ff)
-		self.mFft = fp_matrix(mFf,2*DEFAULT_PRECISION)
+    def __init__(self, n, m, N, T, l=DEFAULT_MSGSIZE, sigma=DEFAULT_SECURITYSIZE):
+        self.l = l
+        self.sigma = sigma
 
-		coeff_z = np.eye(nc) - Hf;
-		self.coeff_z = fp_matrix(coeff_z)
+        filepub = "Keys/pubkey" + str(DEFAULT_KEYSIZE) + ".txt"
+        with open(filepub, 'r') as fin:
+            data = [line.split() for line in fin]
 
-	def gen_rands(self,DGK_pubkey):
-		self.DGK_pubkey = DGK_pubkey
-		T = self.T
-		nc = self.nc
-		m = self.m
-		l = self.l
-		lf = DEFAULT_PRECISION
-		sigma = self.sigma
-		Kc = self.Kc
-		Kw = self.Kw
-		random_state = gmpy2.random_state(seed)
-		filePath = Path('Randomness/'+str(l + sigma)+'.txt')
-		if filePath.is_file():		
-			with open(filePath) as file:
-				# Noise for updating the iterate
-				rn1 = [[[int(next(file)), int(next(file))] for x in range(0,2*nc)] for y in range(0,Kc+(T-1)*Kw)]
-				# Noise for comparison
-				rn2 = [[int(next(file)) for x in range(0,nc)] for y in range(0,2*Kc+2*(T-1)*Kw)]
-		else:
-			rn1 = [[[gmpy2.mpz_urandomb(random_state,l + sigma),gmpy2.mpz_urandomb(random_state,l + sigma)] for i in range(0,2*nc)] for k in range(0,Kc+(T-1)*Kw)]
-			rn2 = [[gmpy2.mpz_urandomb(random_state,l + sigma) for i in range(0,nc)] for k in range(0,2*Kc+2*(T-1)*Kw)]
-		self.obfuscations = rn1
-		self.rn = rn2
-		# Noise for Paillier encryption
-		filePath = Path('Randomness/'+str(self.N_len)+'.txt')
-		if filePath.is_file():		
-			with open(filePath) as file:
-				coinsP = [int(next(file)) for x in range(0,4*(T-1)*nc*Kw+ 4*nc*Kc)] 
-		else:
-			coinsP = [gmpy2.mpz_urandomb(random_state,self.N_len-1) for i in range(0,4*(T-1)*nc*Kw+ 4*nc*Kc)]	
-		coinsP = [gmpy2.powmod(x, self.Np, self.pubkey.nsquare) for x in coinsP]
-		# Noise for DGK encryption
-		filePath = Path('Randomness/'+str(2*DEFAULT_DGK)+'.txt')
-		if filePath.is_file():		
-			with open(filePath) as file:
-				coinsDGK = [int(next(file)) for x in range(0,3*(l+1)*nc*Kc + 3*(l+1)*nc*Kw*(T-1))]
-		else:
-			coinsDGK = [gmpy2.mpz_urandomb(random_state,2*DEFAULT_DGK) for i in range(0,3*(l+1)*nc*Kc + 3*(l+1)*nc*Kw*(T-1))]
-		coinsDGK = [gmpy2.powmod(self.DGK_pubkey.h, x, self.DGK_pubkey.n) for x in coinsDGK]
-		self.coinsDGK = coinsDGK
-		# Noise for truncation
-		filePath = Path('Randomness/'+str(l+2*lf+sigma)+'.txt')
-		if filePath.is_file():		
-			with open(filePath) as file:
-				rn = [int(next(file)) for x in range(0,nc*Kc + nc*Kw*(T-1))]
-		else:
-			rn = [gmpy2.mpz_urandomb(random_state,l+2*lf+sigma) for i in range(0,nc*Kc + nc*Kw*(T-1))]
-		self.fixedNoise = encrypt_vector(self.pubkey, rn) # ,coinsP[-2*nc*K:])
-		er = [-fp(x,-2*lf) for x in rn]
-		er = encrypt_vector(self.pubkey,er) #coinsP[-2*nc*K:-nc*K])
-		self.er = er
-		# coinsP = coinsP[:-3*nc*K]
-		self.coinsP = coinsP
+        Np = mpz(data[0][0])
+        self.Np = Np
 
+        mpk = PaillierPublicKey(n=Np)  # Construct PaillierPublicKey from Np
+        pubkey = labhe.LabHEPublicKey(mpk)
+        self.pubkey = pubkey
+        self.N_len = Np.bit_length()
 
-	def compute_coeff(self,x0):
-		coeff_0 = np.dot(self.mFft,x0)
-		self.coeff_0 = coeff_0
+        fileH = "Data/H" + str(n) + "_" + str(m) + "_" + str(N) + ".txt"
+        H = np.loadtxt(fileH, delimiter=',')
 
-	def t_iterate(self,z):
-		return sum_encrypted_vectors(np.dot(self.coeff_z,z),self.coeff_0)
+        fileF = "Data/F" + str(n) + "_" + str(m) + "_" + str(N) + ".txt"
+        F = np.loadtxt(fileF, delimiter=',')
 
-	def z_iterate(self,new_U,U):
-		new_z = [fp(1+self.eta)*v for v in new_U]
-		z = [fp(-self.eta)*v for v in U]
-		return sum_encrypted_vectors(new_z,z)
+        fileG0 = "Data/G0" + str(n) + "_" + str(m) + "_" + str(N) + ".txt"
+        G0 = np.loadtxt(fileG0, delimiter=',')
 
-	def temporary_prec_t(self):
-		nc = self.nc
-		pubkey = self.pubkey
-		r = [self.fixedNoise.pop() for i in range(0,nc)]
-		temp_t = sum_encrypted_vectors(self.t,r)	
-		return temp_t
+        fileK = "Data/K" + str(n) + "_" + str(m) + "_" + str(N) + ".txt"
+        K = np.loadtxt(fileK, delimiter=',')
 
-	def randomize(self,limit):
-		nc = self.nc
-		a = [0]*nc
-		b = [0]*nc
-		for i in range(0,nc):
-			a[i],b[i] = np.random.permutation([limit[i]+self.pubkey.encrypt(0),self.t[i]])
-		self.a = a
-		self.b = b
-		return self.a,self.b
+        Kc = K[0]
+        Kw = K[1]
+        self.Kc = int(Kc)
+        self.Kw = int(Kw)
+        self.T = T
+        self.m = m
 
-	def init_comparison_s1(self,limit):
-		nc = self.nc
-		l = self.l
-		pubkey = self.pubkey
-		r = self.r 		
-		a,b = self.randomize(limit)
-		z = diff_encrypted_vectors(b,a)
-		z = sum_encrypted_vectors(z,encrypt_vector(pubkey,r,self.coinsP[-nc:]))
-		z = sum_encrypted_vectors(z,encrypt_vector(pubkey,[2**l]*nc,self.coinsP[-2*nc:-nc]))
-		self.coinsP = self.coinsP[:-2*nc]
-		alpha = [gmpy2.t_mod_2exp(x,l) for x in r]
-		alpha = [x.digits(2) for x in alpha]
-		for i in range(0,nc):
-			if (len(alpha[i]) < l):
-				alpha[i] = "".join(['0'*(l-len(alpha[i])),alpha[i]])
-		self.alpha = alpha
-		return z
+        nc = m * N
+        self.nc = nc
 
-	def obfuscate(self):
-		nc = self.nc
-		self.a2 = [0]*nc
-		self.b2 = [0]*nc
-		for i in range(0,nc):
-			r = self.obfuscation[i]
-			self.a2[i] = self.a[i]+self.pubkey.encrypt(r[0])
-			self.b2[i] = self.b[i]+self.pubkey.encrypt(r[1])
-		return self.a2, self.b2
+        Hq = Q_matrix(H)
+        eigs = np.linalg.eigvals(Hq)
+        L = np.real(max(eigs))
+        mu = np.real(min(eigs))
+        cond = Q_s(L / mu)
+        eta = Q_s((np.sqrt(cond) - 1) / (np.sqrt(cond) + 1))
+        Hf = Q_matrix([[h / Q_s(L) for h in hv] for hv in Hq])
+        Ft = F.transpose()
+        Ff = Q_matrix([[Q_s(h) / Q_s(L) for h in hv] for hv in Ft])
 
-	def update_max(self,v):
-		new_U = [0]*self.nc
-		for i in range(0,self.nc):
-			r = self.obfuscation[i]
-			new_U[i] = v[i] + (self.t_comp[i]-1)*r[0] + self.t_comp[i]*(-r[1]) 
-		return new_U
+        self.eta = eta
+        self.Hf = Hf
 
-	def update_min(self,v):
-		t = [0]*self.nc
-		for i in range(0,self.nc):
-			r = self.obfuscation[i]
-			t[i] = v[i] + (self.t_comp[i]-1)*r[1] + self.t_comp[i]*(-r[0]) 
-		return t
+        mFf = np.negative(Ff)
+        self.mFft = fp_matrix(mFf, 2 * DEFAULT_PRECISION)
 
-	def DGK_s1(self,b): 
-		l = self.l
-		nc = self.nc
-		self.delta_A = [0]*nc
-		c_all = [[0]*l]*nc
-		for k in range(0,nc):
-			beta = b[k]
-			alpha = self.alpha[k]
-			DGK_pubkey = self.DGK_pubkey
-			delta_A = np.random.randint(0,2)
-			self.delta_A[k] = delta_A
-			prod = [0]*l
-			c = [DGK_pubkey.raw_encrypt(0)]*l
+        coeff_z = np.eye(nc) - Hf
+        self.coeff_z = fp_matrix(coeff_z)
 
-			for i in range(0,l):
-				if (int(alpha[i]) == 0):
-					prod[i] = beta[i]
-				else: prod[i] = DGK.diff_encrypted(DGK_pubkey.raw_encrypt(1,self.coinsDGK.pop()),beta[i],DGK_pubkey)
-				if (int(delta_A)==int(alpha[i])):
-					if i==0: c[i] = DGK_pubkey.raw_encrypt(0,self.coinsDGK.pop())
-					else: 
-						for iter in range(0,i):
-							c[i] = DGK.add_encrypted(c[i],prod[iter],DGK_pubkey)
-					if (int(delta_A) == 0):
-						diff = DGK.diff_encrypted(DGK_pubkey.raw_encrypt(1,self.coinsDGK.pop()),beta[i],DGK_pubkey)
-						c[i] = DGK.add_encrypted(c[i],diff,DGK_pubkey)
-					else: c[i] = DGK.add_encrypted(c[i],beta[i],DGK_pubkey)
-			for i in range(0,l):
-				if (int(delta_A)==int(alpha[i])):
-					r = gmpy2.mpz_urandomb(gmpy2.random_state(),self.sigma+self.sigma)
-					c[i] = DGK.mul_sc_encrypted(c[i],r,DGK_pubkey)
-				else: 
-					c[i] = DGK_pubkey.raw_encrypt(gmpy2.mpz_urandomb(gmpy2.random_state(),self.sigma+self.sigma),self.coinsDGK.pop()) 
-			c_all[k] = np.random.permutation(c)
-		return c_all
+    def gen_rands(self,DGK_pubkey):
+        self.DGK_pubkey = DGK_pubkey
+        T = self.T
+        nc = self.nc
+        m = self.m
+        l = self.l
+        lf = DEFAULT_PRECISION
+        sigma = self.sigma
+        Kc = self.Kc
+        Kw = self.Kw
+        random_state = gmpy2.random_state(seed)
+        filePath = Path('Randomness/'+str(l + sigma)+'.txt')
+        if filePath.is_file():		
+            with open(filePath) as file:
+                # Noise for updating the iterate
+                rn1 = [[[int(next(file)), int(next(file))] for x in range(0,2*nc)] for y in range(0,Kc+(T-1)*Kw)]
+                # Noise for comparison
+                rn2 = [[int(next(file)) for x in range(0,nc)] for y in range(0,2*Kc+2*(T-1)*Kw)]
+        else:
+            rn1 = [[[gmpy2.mpz_urandomb(random_state,l + sigma),gmpy2.mpz_urandomb(random_state,l + sigma)] for i in range(0,2*nc)] for k in range(0,Kc+(T-1)*Kw)]
+            rn2 = [[gmpy2.mpz_urandomb(random_state,l + sigma) for i in range(0,nc)] for k in range(0,2*Kc+2*(T-1)*Kw)]
+        self.obfuscations = rn1
+        self.rn = rn2
+        # Noise for Paillier encryption
+        filePath = Path('Randomness/'+str(self.N_len)+'.txt')
+        if filePath.is_file():		
+            with open(filePath) as file:
+                coinsP = [int(next(file)) for x in range(0,4*(T-1)*nc*Kw+ 4*nc*Kc)] 
+        else:
+            coinsP = [gmpy2.mpz_urandomb(random_state,self.N_len-1) for i in range(0,4*(T-1)*nc*Kw+ 4*nc*Kc)]	
+        coinsP = [gmpy2.powmod(x, self.Np, self.pubkey.nsquare) for x in coinsP]
+        # Noise for DGK encryption
+        filePath = Path('Randomness/'+str(2*DEFAULT_DGK)+'.txt')
+        if filePath.is_file():		
+            with open(filePath) as file:
+                coinsDGK = [int(next(file)) for x in range(0,3*(l+1)*nc*Kc + 3*(l+1)*nc*Kw*(T-1))]
+        else:
+            coinsDGK = [gmpy2.mpz_urandomb(random_state,2*DEFAULT_DGK) for i in range(0,3*(l+1)*nc*Kc + 3*(l+1)*nc*Kw*(T-1))]
+        coinsDGK = [gmpy2.powmod(self.DGK_pubkey.h, x, self.DGK_pubkey.n) for x in coinsDGK]
+        self.coinsDGK = coinsDGK
+        # Noise for truncation
+        filePath = Path('Randomness/'+str(l+2*lf+sigma)+'.txt')
+        if filePath.is_file():		
+            with open(filePath) as file:
+                rn = [int(next(file)) for x in range(0,nc*Kc + nc*Kw*(T-1))]
+        else:
+            rn = [gmpy2.mpz_urandomb(random_state,l+2*lf+sigma) for i in range(0,nc*Kc + nc*Kw*(T-1))]
+        self.fixedNoise = encrypt_vector(self.pubkey, rn) # ,coinsP[-2*nc*K:])
+        er = [-fp(x,-2*lf) for x in rn]
+        er = encrypt_vector(self.pubkey,er) #coinsP[-2*nc*K:-nc*K])
+        self.er = er
+        # coinsP = coinsP[:-3*nc*K]
+        self.coinsP = coinsP
 
-	def compute_tDGK(self,delta_B,zdivl):
-		t_comp = [0]*self.nc
-		for i in range(0,self.nc):
-			if (self.delta_A[i] == 1):
-				t_comp[i] = delta_B[i]
-			else: t_comp[i] = self.pubkey.encrypt(1) - delta_B[i]
-			t_comp[i] = zdivl[i] - self.pubkey.encrypt(mpz(gmpy2.t_div_2exp(self.r[i],self.l))) - t_comp[i]
-		self.t_comp = t_comp
-		return t_comp
+    def compute_coeff(self,x0):
+        coeff_0 = np.dot(self.mFft,x0)
+        self.coeff_0 = coeff_0
+
+    def t_iterate(self,z):
+        return sum_encrypted_vectors(np.dot(self.coeff_z,z),self.coeff_0)
+
+    def z_iterate(self,new_U,U):
+        new_z = [fp(1+self.eta)*v for v in new_U]
+        z = [fp(-self.eta)*v for v in U]
+        return sum_encrypted_vectors(new_z,z)
+
+    def temporary_prec_t(self):
+        nc = self.nc
+        pubkey = self.pubkey
+        r = [self.fixedNoise.pop() for i in range(0,nc)]
+        temp_t = sum_encrypted_vectors(self.t,r)	
+        return temp_t
+
+    def randomize(self,limit):
+        nc = self.nc
+        a = [0]*nc
+        b = [0]*nc
+        for i in range(0,nc):
+            a[i],b[i] = np.random.permutation([limit[i]+self.pubkey.encrypt(0),self.t[i]])
+        self.a = a
+        self.b = b
+        return self.a,self.b
+
+    def init_comparison_s1(self,limit):
+        nc = self.nc
+        l = self.l
+        pubkey = self.pubkey
+        r = self.r 		
+        a,b = self.randomize(limit)
+        z = diff_encrypted_vectors(b,a)
+        z = sum_encrypted_vectors(z,encrypt_vector(pubkey,r,self.coinsP[-nc:]))
+        z = sum_encrypted_vectors(z,encrypt_vector(pubkey,[2**l]*nc,self.coinsP[-2*nc:-nc]))
+        self.coinsP = self.coinsP[:-2*nc]
+        alpha = [gmpy2.t_mod_2exp(x,l) for x in r]
+        alpha = [x.digits(2) for x in alpha]
+        for i in range(0,nc):
+            if (len(alpha[i]) < l):
+                alpha[i] = "".join(['0'*(l-len(alpha[i])),alpha[i]])
+        self.alpha = alpha
+        return z
+
+    def obfuscate(self):
+        nc = self.nc
+        self.a2 = [0]*nc
+        self.b2 = [0]*nc
+        for i in range(0,nc):
+            r = self.obfuscation[i]
+            self.a2[i] = self.a[i]+self.pubkey.encrypt(r[0])
+            self.b2[i] = self.b[i]+self.pubkey.encrypt(r[1])
+        return self.a2, self.b2
+
+    def update_max(self,v):
+        new_U = [0]*self.nc
+        for i in range(0,self.nc):
+            r = self.obfuscation[i]
+            new_U[i] = v[i] + (self.t_comp[i]-1)*r[0] + self.t_comp[i]*(-r[1]) 
+        return new_U
+
+    def update_min(self,v):
+        t = [0]*self.nc
+        for i in range(0,self.nc):
+            r = self.obfuscation[i]
+            t[i] = v[i] + (self.t_comp[i]-1)*r[1] + self.t_comp[i]*(-r[0]) 
+        return t
+
+    def DGK_s1(self,b): 
+        l = self.l
+        nc = self.nc
+        self.delta_A = [0]*nc
+        c_all = [[0]*l]*nc
+        for k in range(0,nc):
+            beta = b[k]
+            alpha = self.alpha[k]
+            DGK_pubkey = self.DGK_pubkey
+            delta_A = np.random.randint(0,2)
+            self.delta_A[k] = delta_A
+            prod = [0]*l
+            c = [DGK_pubkey.raw_encrypt(0)]*l
+
+            for i in range(0,l):
+                if (int(alpha[i]) == 0):
+                    prod[i] = beta[i]
+                else: prod[i] = DGK.diff_encrypted(DGK_pubkey.raw_encrypt(1,self.coinsDGK.pop()),beta[i],DGK_pubkey)
+                if (int(delta_A)==int(alpha[i])):
+                    if i==0: c[i] = DGK_pubkey.raw_encrypt(0,self.coinsDGK.pop())
+                    else: 
+                        for iter in range(0,i):
+                            c[i] = DGK.add_encrypted(c[i],prod[iter],DGK_pubkey)
+                    if (int(delta_A) == 0):
+                        diff = DGK.diff_encrypted(DGK_pubkey.raw_encrypt(1,self.coinsDGK.pop()),beta[i],DGK_pubkey)
+                        c[i] = DGK.add_encrypted(c[i],diff,DGK_pubkey)
+                    else: c[i] = DGK.add_encrypted(c[i],beta[i],DGK_pubkey)
+            for i in range(0,l):
+                if (int(delta_A)==int(alpha[i])):
+                    r = gmpy2.mpz_urandomb(gmpy2.random_state(),self.sigma+self.sigma)
+                    c[i] = DGK.mul_sc_encrypted(c[i],r,DGK_pubkey)
+                else: 
+                    c[i] = DGK_pubkey.raw_encrypt(gmpy2.mpz_urandomb(gmpy2.random_state(),self.sigma+self.sigma),self.coinsDGK.pop()) 
+            c_all[k] = np.random.permutation(c)
+        return c_all
+
+    def compute_tDGK(self,delta_B,zdivl):
+        t_comp = [0]*self.nc
+        for i in range(0,self.nc):
+            if (self.delta_A[i] == 1):
+                t_comp[i] = delta_B[i]
+            else: t_comp[i] = self.pubkey.encrypt(1) - delta_B[i]
+            t_comp[i] = zdivl[i] - self.pubkey.encrypt(mpz(gmpy2.t_div_2exp(self.r[i],self.l))) - t_comp[i]
+        self.t_comp = t_comp
+        return t_comp
 
 def key(serialised):
 	received_dict = json.loads(serialised)
@@ -395,7 +442,7 @@ def recv_size(the_socket):
 	return b''.join(total_data)
 
 def get_enc_data(received_dict,pubkey):
-	return [paillier.EncryptedNumber(pubkey, int(x)) for x in received_dict]
+	return [labhe.LabEncryptedNumber(pubkey, int(x)) for x in received_dict]
 
 def send_DGK_data(encrypted_number_list):
 	time.sleep(NETWORK_DELAY)

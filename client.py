@@ -5,11 +5,14 @@ import sys,struct
 import json
 from gmpy2 import mpz
 import paillier
+from paillier import PaillierPublicKey,PaillierPrivateKey
 import numpy as np
 import time
 import random
 import os
-
+import util_fpv 
+from util_fpv import clamp_scalar
+import labhe
 try:
 	import gmpy2
 	HAVE_GMP = True
@@ -23,16 +26,29 @@ DEFAULT_PRECISION = int(DEFAULT_MSGSIZE/2)
 NETWORK_DELAY = 0
 
 seed = 42	
-
 def encrypt_vector(pubkey, x, coins=None):
-	if (coins==None):
-		return [pubkey.encrypt(y) for y in x]
-	else: return [pubkey.encrypt(y,coins.pop()) for y in x]
-def decrypt_vector(privkey, x):
-    return np.array([privkey.decrypt(i) for i in x])
+    if coins is None:
+        return [pubkey.encrypt(y) for y in x]
+    else:
+        return [pubkey.encrypt(y, coins.pop()) for y in x]
 
-"""We take the convention that a number x < N/3 is positive, and that a number x > 2N/3 is negative. 
-	The range N/3 < x < 2N/3 allows for overflow detection.""" 
+def decrypt_vector(privkey, x):
+    result = []
+    for i in x:
+        if isinstance(i, labhe.LabEncryptedNumber):
+            # LabHE encryption - use LabHE private key
+            result.append(privkey.decrypt(i))
+        elif isinstance(i, paillier.EncryptedNumber):
+            # Paillier encryption - use Paillier private key directly
+            result.append(privkey.msk.decrypt(i))
+        else:
+            # Handle other cases or raise error
+            raise TypeError(f"Unknown encryption type: {type(i)}")
+    return np.array(result)
+
+    
+
+
 
 def Q_s(scalar,prec=DEFAULT_PRECISION):
 	return int(scalar*(2**prec))/(2**prec)
@@ -46,14 +62,17 @@ def Q_vector(vec,prec=DEFAULT_PRECISION):
 def Q_matrix(mat,prec=DEFAULT_PRECISION):
 	return [Q_vector(x,prec) for x in mat]
 
-def fp(scalar,prec=DEFAULT_PRECISION):
-	return mpz(scalar*(2**prec))
+def fp(val, lf=32, max_val=None):
+    scale = 2 ** lf
+    fixed = int(round(val * scale))
+    if max_val is not None:
+        return clamp_scalar(fixed, max_val)
+    return fixed
 
-def fp_vector(vec,prec=DEFAULT_PRECISION):
-	if np.size(vec)>1:
-		return [fp(x,prec) for x in vec]
-	else:
-		return fp(vec,prec)
+def fp_vector(vec, lf=32, max_val=None):
+    scale = 2 ** lf
+    return [clamp_scalar(int(round(v * scale)), max_val) if max_val is not None else int(round(v * scale)) for v in vec]
+
 
 def retrieve_fp(scalar,prec=DEFAULT_PRECISION):
 	return scalar/(2**prec)
@@ -61,59 +80,95 @@ def retrieve_fp(scalar,prec=DEFAULT_PRECISION):
 def retrieve_fp_vector(vec,prec=DEFAULT_PRECISION):
 	return [retrieve_fp(x,prec) for x in vec]
 
+import os
+import random
+import numpy as np
+from gmpy2 import mpz, random_state, mpz_urandomb, powmod
+from paillier import PaillierPublicKey
+import labhe
+
+DEFAULT_KEYSIZE = 512
+DEFAULT_MSGSIZE = 10
+seed = 42  # Define this globally or pass as parameter if needed
+
+
+
 class Client:
-	def __init__(self, l=DEFAULT_MSGSIZE):
-		try:
-			filepub = "Keys/pubkey"+str(DEFAULT_KEYSIZE)+".txt"
-			with open(filepub, 'r') as fin:
-				data=[line.split() for line in fin]
-			Np = int(data[0][0])
-			pubkey = paillier.PaillierPublicKey(n=Np)
+    def __init__(self, l=DEFAULT_MSGSIZE):
+        self.l = l
+        try:
+            # Load public key
+            filepub = f"Keys/pubkey{DEFAULT_KEYSIZE}.txt"
+            with open(filepub, 'r') as fin:
+                data = [line.split() for line in fin]
+                Np = int(data[0][0])
 
-			filepriv = "Keys/privkey"+str(DEFAULT_KEYSIZE)+".txt"
-			with open(filepriv, 'r') as fin:
-				data=[line.split() for line in fin]
-			p = mpz(data[0][0])
-			q = mpz(data[1][0])
-			privkey = paillier.PaillierPrivateKey(pubkey, p, q)		
-			self.pubkey = pubkey; self.privkey = privkey
+            mpk = PaillierPublicKey(n=Np)
+            pubkey = labhe.LabHEPublicKey(mpk)
 
-		except:
-			"""If the files are not available, generate the keys """
-			keypair = paillier.generate_paillier_keypair(n_length=DEFAULT_KEYSIZE)
-			self.pubkey, self.privkey = keypair
-			Np = self.pubkey.n
-			file = 'Keys/pubkey'+str(DEFAULT_KEYSIZE)+".txt"
-			with open(file, 'w') as f:
-				f.write("%d" % (self.pubkey.n))
-			file = 'Keys/privkey'+str(DEFAULT_KEYSIZE)+".txt"			
-			with open(file, 'w') as f:
-				f.write("%d\n%d" % (self.privkey.p,self.privkey.q))
+            # Load private key
+            filepriv = f"Keys/privkey{DEFAULT_KEYSIZE}.txt"
+            with open(filepriv, 'r') as fin:
+                data = [line.split() for line in fin]
+                p = mpz(data[0][0])
+                q = mpz(data[1][0])
+
+            pai_priv = PaillierPrivateKey(mpk, p, q)
+
+            # Generate dummy usk and upk
+            usk = [random.randint(1, 1000) for _ in range(5)]
+            upk = util_fpv.encrypt_vector(mpk, usk)  
+            privkey = labhe.LabHEPrivateKey(pai_priv, upk)
+
+            self.pubkey = pubkey
+            self.privkey = privkey
+
+        except Exception as e:
+            print("Key loading failed. Generating new keys...", e)
+            usk = [random.randint(1, 1000) for _ in range(5)]
+            self.pubkey, self.privkey = labhe.generate_LabHE_keypair(usk, n_length=DEFAULT_KEYSIZE)
+
+            # Save keys to disk
+            Np = self.pubkey.n
+            os.makedirs("Keys", exist_ok=True)
+            with open(f"Keys/pubkey{DEFAULT_KEYSIZE}.txt", 'w') as f:
+                f.write(f"{Np}")
+            with open(f"Keys/privkey{DEFAULT_KEYSIZE}.txt", 'w') as f:
+                f.write(f"{self.privkey.msk.p}\n{self.privkey.msk.q}")
 
 
-	def load_data(self,n,m,N):
-		fileparam = "Data/x0"+str(n)+"_"+str(m)+"_"+str(N)+".txt"
-		x0 = np.loadtxt(fileparam)
-		self.x0 = x0;
-		filew0 = "Data/w0"+str(n)+"_"+str(m)+"_"+str(N)+".txt"		
-		w0 = np.loadtxt(filew0, delimiter=',')
-		hu = np.concatenate([w0[2*i*m:(2*i+1)*m] for i in range(0,N)])
-		lu = np.concatenate([-w0[(2*i+1)*m:2*(i+1)*m] for i in range(0,N)])
-		self.hu = hu; self.lu = lu
 
-	def gen_rands(self):
-		n = self.n; Kc = self.Kc; Kw = self.Kw; nc = self.nc; T = self.T
-		N_len = self.pubkey.n.bit_length()
-		random_state = gmpy2.random_state(seed)
-		coinsP = [gmpy2.mpz_urandomb(random_state,N_len-1) for i in range(0,T*n+(T-1)*nc*Kw+nc*Kc)]
-		coinsP = [gmpy2.powmod(x, self.pubkey.n, self.pubkey.nsquare) for x in coinsP]
-		self.coinsP = coinsP
+    def load_data(self, n, m, N):
+        fileparam = f"Data/x0{n}_{m}_{N}.txt"
+        self.x0 = np.loadtxt(fileparam)
 
-	def compare(self,t):
-		nc = self.nc
-		hu = self.hu; lu = self.lu
-		with np.errstate(invalid='ignore'): U = np.maximum(lu,np.minimum(hu,t))
-		return U
+        filew0 = f"Data/w0{n}_{m}_{N}.txt"
+        w0 = np.loadtxt(filew0, delimiter=',')
+
+        hu = np.concatenate([w0[2 * i * m:(2 * i + 1) * m] for i in range(N)])
+        lu = np.concatenate([-w0[(2 * i + 1) * m:2 * (i + 1) * m] for i in range(N)])
+        self.hu = hu
+        self.lu = lu
+
+    def gen_rands(self):
+        n = self.n
+        Kc = self.Kc
+        Kw = self.Kw
+        nc = self.nc
+        T = self.T
+
+        N_len = self.pubkey.n.bit_length()
+        state = random_state(seed)
+        total_rands = T * n + (T - 1) * nc * Kw + nc * Kc
+        coinsP = [mpz_urandomb(state, N_len - 1) for _ in range(total_rands)]
+        self.coinsP = [powmod(x, self.pubkey.n, self.pubkey.nsquare) for x in coinsP]
+
+    def compare(self, t):
+        nc = self.nc
+        with np.errstate(invalid='ignore'):
+            U = np.maximum(self.lu, np.minimum(self.hu, t))
+        return U
+
 
 def send_encr_data(encrypted_number_list):
 	time.sleep(NETWORK_DELAY)
@@ -144,12 +199,32 @@ def recv_size(the_socket):
 			total_data.append(sock_data)
 		total_len=sum([len(i) for i in total_data ])
 	return b''.join(total_data)
+def get_enc_data(received_list, pubkey):
+    result = []
+    for x in received_list:
+        if isinstance(x, (list, tuple)) and len(x) == 2:
+            # Case: LabHE ciphertext with both components
+            c0, c1 = int(x[0]), int(x[1])
+            result.append(labhe.LabEncryptedNumber(pubkey, (c0, c1)))
+        elif isinstance(x, (int, str)):
+            # Possibly Paillier ciphertext — wrap as (c0, 0) to match LabHE format
+            c0 = int(x)
+            result.append(labhe.LabEncryptedNumber(pubkey, (c0, 0)))
+        else:
+            raise TypeError(f"Unsupported encrypted input: {x}")
+    return result
 
-def get_enc_data(received_dict,pubkey):
-	return [paillier.EncryptedNumber(pubkey, int(x)) for x in received_dict]
+
 
 def get_plain_data(data):
-	return [int(x) for x in data]
+    result = []
+    for x in data:
+        try:
+            result.append(int(x))
+        except (ValueError, TypeError):
+            print(f"Warning: could not convert {x} to int")
+    return result
+
 
 
 def main():

@@ -3,14 +3,20 @@
 import socket
 import sys,struct
 import json
-from gmpy2 import mpz
+from gmpy2 import mpz, random_state, mpz_urandomb, powmod, t_mod_2exp, t_div_2exp
 import paillier
+from paillier import PaillierPublicKey,PaillierPrivateKey
 from pathlib import Path
 import numpy as np
 import time
 import DGK
 import genDGK
+import util_fpv
+from util_fpv import clamp_scalar
 import os
+import labhe
+from labhe import LabEncryptedNumber
+import random
 
 
 DEFAULT_KEYSIZE = 512						
@@ -42,7 +48,14 @@ def encrypt_matrix(pubkey, x, coins=None):
 	else: return [[pubkey.encrypt(y,coins.pop()) for y in z] for z in x]
 
 def decrypt_vector(privkey, x):
-    return np.array([privkey.decrypt(i) for i in x])
+    result = []
+    for i in x:
+        if hasattr(i, 'ciphertext'):  # Basic check for encrypted object
+            result.append(privkey.decrypt(i))
+        else:
+            raise TypeError(f"Expected encrypted object, got {type(i)}: {i}")
+    return np.array(result)
+
 
 def sum_encrypted_vectors(x, y):
 	return [x[i] + y[i] for i in range(np.size(x))]
@@ -82,16 +95,18 @@ def Q_vector(vec,prec=DEFAULT_PRECISION):
 def Q_matrix(mat,prec=DEFAULT_PRECISION):
 	return [Q_vector(x,prec) for x in mat]
 
-def fp(scalar,prec=DEFAULT_PRECISION):
-	if prec < 0:
-		return gmpy2.t_div_2exp(mpz(scalar),-prec)
-	else: return mpz(gmpy2.mul(scalar,2**prec))
+def fp(val, lf=32, max_val=None):
+    scale = 2 ** lf
+    fixed = int(round(val * scale))
+    if max_val is not None:
+        return clamp_scalar(fixed, max_val)
+    return fixed
 
-def fp_vector(vec,prec=DEFAULT_PRECISION):
-	if np.size(vec)>1:
-		return [fp(x,prec) for x in vec]
-	else:
-		return fp(vec,prec)
+
+def fp_vector(vec, lf=32, max_val=None):
+    scale = 2 ** lf
+    return [clamp_scalar(int(round(v * scale)), max_val) if max_val is not None else int(round(v * scale)) for v in vec]
+
 
 def fp_matrix(mat,prec=DEFAULT_PRECISION):
 	return [fp_vector(x,prec) for x in mat]
@@ -105,129 +120,129 @@ def retrieve_fp_vector(vec,prec=DEFAULT_PRECISION):
 def retrieve_fp_matrix(mat,prec=DEFAULT_PRECISION):
 	return [retrieve_fp_vector(x,prec) for x in mat]
 
+
 class Server2:
-	def __init__(self, l=DEFAULT_MSGSIZE,t_DGK=DEFAULT_DGK,sigma=DEFAULT_SECURITYSIZE):
-		try:
-			filepub = "Keys/pubkey"+str(DEFAULT_KEYSIZE)+".txt"
-			with open(filepub, 'r') as fin:
-				data=[line.split() for line in fin]
-			Np = int(data[0][0])
-			pubkey = paillier.PaillierPublicKey(n=Np)
+    def __init__(self, l=DEFAULT_MSGSIZE, t_DGK=DEFAULT_DGK, sigma=DEFAULT_SECURITYSIZE):
+        try:
+            # Load Paillier public key
+            filepub = f"Keys/pubkey{DEFAULT_KEYSIZE}.txt"
+            with open(filepub, 'r') as fin:
+                data = [line.split() for line in fin]
+            Np = mpz(data[0][0])
+            mpk = PaillierPublicKey(n=Np)
+            pubkey = labhe.LabHEPublicKey(mpk)
 
-			filepriv = "Keys/privkey"+str(DEFAULT_KEYSIZE)+".txt"
-			with open(filepriv, 'r') as fin:
-				data=[line.split() for line in fin]
-			p = mpz(data[0][0])
-			q = mpz(data[1][0])
-			privkey = paillier.PaillierPrivateKey(pubkey, p, q)		
-			self.pubkey = pubkey; self.privkey = privkey
+            # Load Paillier private key
+            filepriv = f"Keys/privkey{DEFAULT_KEYSIZE}.txt"
+            with open(filepriv, 'r') as fin:
+                data = [line.split() for line in fin]
+            p = mpz(data[0][0])
+            q = mpz(data[1][0])
+            msk = PaillierPrivateKey(mpk, p, q)
 
-		except:
-			"""If the files are not available, generate the keys """
-			keypair = paillier.generate_paillier_keypair(n_length=DEFAULT_KEYSIZE)
-			self.pubkey, self.privkey = keypair
-			Np = self.pubkey.n
-			file = 'Keys/pubkey'+str(DEFAULT_KEYSIZE)+".txt"
-			with open(file, 'w') as f:
-				f.write("%d" % (self.pubkey.n))
-			file = 'Keys/privkey'+str(DEFAULT_KEYSIZE)+".txt"			
-			with open(file, 'w') as f:
-				f.write("%d\n%d" % (self.privkey.p,self.privkey.q))
+            # Dummy upk used just to satisfy constructor — not used for decryption
+            c0 = pubkey.Pai_key.encrypt(0)  # Paillier encryption of 0
+            dummy_ciphertext = (c0, c0)      # LabHE expects a 2-element structure
+            dummy_upk = [LabEncryptedNumber(pubkey, dummy_ciphertext)]
 
-		self.N_len = Np.bit_length()
-		self.l = l
-		self.t_DGK = t_DGK
-		self.sigma = sigma
-		self.generate_DGK()
+            privkey = labhe.LabHEPrivateKey(msk, dummy_upk)
+
+            self.pubkey = pubkey
+            self.privkey = privkey
+
+        except Exception as e:
+            print("Key loading failed. Generating new keys...", e)
 
 
-	def params(self,n,m,N,Kc,Kw,T):	
-		self.Kc = Kc
-		self.Kw = Kw
-		nc = m*N
-		self.nc = nc
-		t2 = 2*self.t_DGK
-		N_len = self.N_len
-		random_state = gmpy2.random_state(seed)
-		# Noise for Paillier encryption
-		filePath = Path('Randomness/'+str(N_len)+'.txt')
-		if filePath.is_file():
-			with open(filePath) as file:
-				coinsP = [int(next(file)) for x in range(0,7*(T-1)*nc*Kw + 7*nc*Kc)]
-		else: 
-			coinsP = [gmpy2.mpz_urandomb(random_state,N_len-1) for i in range(0,7*(T-1)*nc*Kw + 7*nc*Kc)]
-		coinsP = [gmpy2.powmod(x, self.pubkey.n, self.pubkey.nsquare) for x in coinsP]
-		self.coinsP = coinsP
-		filePath = Path('Randomness/'+str(t2)+'.txt')
-		if filePath.is_file():		
-			with open('Randomness/'+str(t2)+'.txt') as file:
-				coinsDGK = [int(next(file)) for x in range(0,2*(self.l+1)*nc*Kc + 2*(self.l+1)*nc*Kw*(T-1))]
-		else:
-			coinsDGK = [gmpy2.mpz_urandomb(random_state,t2) for i in range(0,2*(self.l+1)*nc*Kc + 2*(self.l+1)*nc*Kw*(T-1))]
-		coinsDGK = [gmpy2.powmod(self.DGK_pubkey.h, x, self.DGK_pubkey.n) for x in coinsDGK]
-		self.coinsDGK = coinsDGK
-		# self.delta_B = [0]*nc
+            # Key generation fallback
+            usk = [random.randint(1, 1000) for _ in range(1)]  # single usk
+            self.pubkey, self.privkey = labhe.generate_LabHE_keypair(usk, n_length=DEFAULT_KEYSIZE)
 
-	def init_comparison_s2(self,msg):
-		l = self.l
-		z = decrypt_vector(self.privkey,msg)
-		z = [mpz(x) for x in z]
-		self.z = z
-		beta = [gmpy2.t_mod_2exp(x,l) for x in z]
-		beta = [x.digits(2) for x in beta]
-		for i in range(0,self.nc):
-			if (len(beta[i]) < l):
-				beta[i] = "".join(['0'*(l-len(beta[i])),beta[i]])
-		self.beta = beta
+            # Save new keys
+            Np = self.pubkey.n
+            os.makedirs("Keys", exist_ok=True)
+            with open(f"Keys/pubkey{DEFAULT_KEYSIZE}.txt", 'w') as f:
+                f.write(f"{Np}")
+            with open(f"Keys/privkey{DEFAULT_KEYSIZE}.txt", 'w') as f:
+                f.write(f"{self.privkey.msk.p}\n{self.privkey.msk.q}")
 
 
-	def generate_DGK(self):
-		try:
-			file = 'Keys/DGK_keys'+str(KEYSIZE_DGK)+'_'+str(MSGSIZE_DGK)+'.txt'
-			p,q,u,vp,vq,fp,fq,g,h = DGK.loadkey(file)
-		except:
-			"""If the files are not available, generate the keys """
-			p,q,u,vp,vq,fp,fq,g,h = genDGK.keysDGK(KEYSIZE_DGK,MSGSIZE_DGK,self.t_DGK)
-			with open(os.path.abspath('Keys/DGK_keys'+str(KEYSIZE_DGK)+'_'+str(MSGSIZE_DGK)+'.txt'),'w') as f:
-				f.write("%d\n%d\n%d\n%d\n%d\n%d\n%d\n%d\n%d" % (p, q, u, vp, vq, fp, fq, g, h))
 
-		n = p*q
-		self.DGK_pubkey = DGK.DGKpubkey(n,g,h,u)
-		self.DGK_privkey = DGK.DGKprivkey(p,q,vp,self.DGK_pubkey)
+        self.N_len = Np.bit_length()
+        self.l = l
+        self.t_DGK = t_DGK
+        self.sigma = sigma
+        self.generate_DGK()
 
+    def params(self, n, m, N, Kc, Kw, T):
+        self.Kc = Kc
+        self.Kw = Kw
+        self.nc = m * N
+        t2 = 2 * self.t_DGK
+        random_gen = random_state(seed)
 
-	def DGK_s2(self,c_all):
-		l = self.l
-		nc = self.nc
-		for i in range(0,nc):
-			c = c_all[i]
-			self.delta_B[i] = 0
-			for j in range(0,l):
-				if (int(self.DGK_privkey.raw_decrypt0(c[j])) == 0):
-					self.delta_B[i] = 1
-					break
-		db = encrypt_vector(self.pubkey,self.delta_B,self.coinsP[-nc:]); z = encrypt_vector(self.pubkey,[mpz(gmpy2.t_div_2exp(self.z[i],l)) for i in range(0,nc)],self.coinsP[-2*nc:-nc])
-		self.coinsP = self.coinsP[:-2*nc]
-		return db,z
+        pathP = Path(f'Randomness/{self.N_len}.txt')
+        if pathP.is_file():
+            with open(pathP) as file:
+                coinsP = [int(next(file)) for _ in range(7*(T-1)*self.nc*Kw + 7*self.nc*Kc)]
+        else:
+            coinsP = [mpz_urandomb(random_gen, self.N_len - 1) for _ in range(7*(T-1)*self.nc*Kw + 7*self.nc*Kc)]
+        self.coinsP = [powmod(x, self.pubkey.n, self.pubkey.nsquare) for x in coinsP]
 
+        pathDGK = Path(f'Randomness/{t2}.txt')
+        if pathDGK.is_file():
+            with open(pathDGK) as file:
+                coinsDGK = [int(next(file)) for _ in range(2*(self.l+1)*self.nc*Kc + 2*(self.l+1)*self.nc*Kw*(T-1))]
+        else:
+            coinsDGK = [mpz_urandomb(random_gen, t2) for _ in range(2*(self.l+1)*self.nc*Kc + 2*(self.l+1)*self.nc*Kw*(T-1))]
+        self.coinsDGK = [powmod(self.DGK_pubkey.h, x, self.DGK_pubkey.n) for x in coinsDGK]
 
-	def choose_max(self,a,b):
-		nc = self.nc
-		v = [0]*nc
-		for i in range(0,nc):
-			if int(self.t_comp[i])==0: 
-				v[i] = a[i] + self.pubkey.encrypt(0,self.coinsP.pop())
-			else: v[i] = b[i] + self.pubkey.encrypt(0,self.coinsP.pop())
-		return v
+    def init_comparison_s2(self, msg):
+        self.z = [mpz(x) for x in decrypt_vector(self.privkey, msg)]
+        self.beta = []
+        for x in self.z:
+            bin_str = t_mod_2exp(x, self.l).digits(2)
+            self.beta.append(bin_str.zfill(self.l))
 
-	def choose_min(self,a,b):
-		nc = self.nc
-		v = [0]*nc
-		for i in range(0,nc):
-			if int(self.t_comp[i])==1: 
-				v[i] = a[i] + self.pubkey.encrypt(0,self.coinsP.pop())
-			else: v[i] = b[i] + self.pubkey.encrypt(0,self.coinsP.pop())
-		return v
+    def generate_DGK(self):
+        try:
+            file = f'Keys/DGK_keys{KEYSIZE_DGK}_{MSGSIZE_DGK}.txt'
+            p, q, u, vp, vq, fp, fq, g, h = DGK.loadkey(file)
+        except:
+            p, q, u, vp, vq, fp, fq, g, h = genDGK.keysDGK(KEYSIZE_DGK, MSGSIZE_DGK, self.t_DGK)
+            os.makedirs("Keys", exist_ok=True)
+            with open(f'Keys/DGK_keys{KEYSIZE_DGK}_{MSGSIZE_DGK}.txt', 'w') as f:
+                f.write(f"{p}\n{q}\n{u}\n{vp}\n{vq}\n{fp}\n{fq}\n{g}\n{h}")
+
+        n = p * q
+        self.DGK_pubkey = DGK.DGKpubkey(n, g, h, u)
+        self.DGK_privkey = DGK.DGKprivkey(p, q, vp, self.DGK_pubkey)
+
+    def DGK_s2(self, c_all):
+        self.delta_B = []
+        for c in c_all:
+            flag = any(int(self.DGK_privkey.raw_decrypt0(bit)) == 0 for bit in c)
+            self.delta_B.append(int(flag))
+
+        db = encrypt_vector(self.pubkey, self.delta_B, self.coinsP[-self.nc:])
+        z = encrypt_vector(self.pubkey, [mpz(t_div_2exp(self.z[i], self.l)) for i in range(self.nc)], self.coinsP[-2*self.nc:-self.nc])
+        self.coinsP = self.coinsP[:-2*self.nc]
+        return db, z
+
+    def choose_max(self, a, b):
+        return [
+            a[i] + self.pubkey.encrypt(0, self.coinsP.pop()) if int(self.t_comp[i]) == 0
+            else b[i] + self.pubkey.encrypt(0, self.coinsP.pop())
+            for i in range(self.nc)
+        ]
+
+    def choose_min(self, a, b):
+        return [
+            a[i] + self.pubkey.encrypt(0, self.coinsP.pop()) if int(self.t_comp[i]) == 1
+            else b[i] + self.pubkey.encrypt(0, self.coinsP.pop())
+            for i in range(self.nc)
+        ]
+
 
 def keys(DGK_pubkey):
 	pubkeys = {}
@@ -235,11 +250,31 @@ def keys(DGK_pubkey):
 	serialized_pubkeys = json.dumps(pubkeys)
 	return serialized_pubkeys
 
-def get_enc_data(received_dict,pubkey):
-	return [paillier.EncryptedNumber(pubkey, int(x)) for x in received_dict]
+def get_enc_data(received_list, pubkey):
+    result = []
+    for x in received_list:
+        if isinstance(x, (list, tuple)) and len(x) == 2:
+            # LabHE ciphertext: (c0, c1)
+            c0, c1 = int(x[0]), int(x[1])
+            result.append(labhe.LabEncryptedNumber(pubkey, (c0, c1)))
+        elif isinstance(x, int):
+            # Paillier-style ciphertext, treated as rerandomized (only c0)
+            result.append(labhe.LabEncryptedNumber(pubkey, (int(x),)))  # single-element tuple
+        else:
+            raise TypeError(f"Invalid ciphertext format: expected (c0, c1) or int, got {x}")
+    return result
+
+
 
 def get_plain_data(data):
-	return [int(x) for x in data]
+    result = []
+    for x in data:
+        try:
+            result.append(int(x))
+        except (ValueError, TypeError):
+            print(f"Warning: could not convert {x} to int")
+    return result
+
 
 def recv_size(the_socket):
 	#data length is 4 bytes

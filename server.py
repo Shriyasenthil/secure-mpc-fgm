@@ -6,8 +6,13 @@ import json
 from gmpy2 import mpz
 import paillier
 import numpy as np
+import labhe
 import time
 import random
+import util_fpv
+from util_fpv import clamp_scalar
+import labhe
+from labhe import LabHEPublicKey,LabHEPrivateKey
 try:
 	import gmpy2
 	HAVE_GMP = True
@@ -43,14 +48,18 @@ def Q_vector(vec,prec=DEFAULT_PRECISION):
 def Q_matrix(mat,prec=DEFAULT_PRECISION):
 	return [Q_vector(x,prec) for x in mat]
 
-def fp(scalar,prec=DEFAULT_PRECISION):
-	return mpz(scalar*(2**prec))
+def fp(val, lf=32, max_val=None):
+    scale = 2 ** lf
+    fixed = int(round(val * scale))
+    if max_val is not None:
+        return clamp_scalar(fixed, max_val)
+    return fixed
 
-def fp_vector(vec,prec=DEFAULT_PRECISION):
-	if np.size(vec)>1:
-		return [fp(x,prec) for x in vec]
-	else:
-		return fp(vec,prec)
+
+def fp_vector(vec, lf=32, max_val=None):
+    scale = 2 ** lf
+    return [clamp_scalar(int(round(v * scale)), max_val) if max_val is not None else int(round(v * scale)) for v in vec]
+
 
 def fp_matrix(mat,prec=DEFAULT_PRECISION):
 	return [fp_vector(x,prec) for x in mat]
@@ -66,56 +75,62 @@ def retrieve_fp_matrix(mat,prec=DEFAULT_PRECISION):
 
 def decrypt_vector(privkey, x):
     return np.array([privkey.decrypt(i) for i in x])
-
 class Server:
-	def __init__(self, n, m, N, l=DEFAULT_MSGSIZE, sigma = DEFAULT_KEYSIZE):
-		filepub = "Keys/pubkey"+str(DEFAULT_KEYSIZE)+".txt"
-		with open(filepub, 'r') as fin:
-			data=[line.split() for line in fin]
-		Np = mpz(data[0][0])
-		pubkey = paillier.PaillierPublicKey(n=Np)
-		self.pubkey = pubkey		
-		fileH = "Data/H"+str(n)+"_"+str(m)+"_"+str(N)+".txt"
-		H = np.loadtxt(fileH, delimiter=',')
-		fileF = "Data/F"+str(n)+"_"+str(m)+"_"+str(N)+".txt"
-		F = np.loadtxt(fileF, delimiter=',')		
-		fileG0 = "Data/G0"+str(n)+"_"+str(m)+"_"+str(N)+".txt"
-		G0 = np.loadtxt(fileG0, delimiter=',')
-		fileK = "Data/K"+str(n)+"_"+str(m)+"_"+str(N)+".txt"		
-		K = np.loadtxt(fileK, delimiter=',')	
-		Kc = K[0];	Kw = K[1]
-		self.Kc = int(Kc);	self.Kw = int(Kw)
+    def __init__(self, n, m, N, l=DEFAULT_MSGSIZE, sigma=DEFAULT_KEYSIZE):
+        filepub = "Keys/pubkey" + str(DEFAULT_KEYSIZE) + ".txt"
+        with open(filepub, 'r') as fin:
+            data = [line.split() for line in fin]
+        Np = mpz(data[0][0])
 
-		nc = m*N
-		self.nc = nc
-		Hq = Q_matrix(H)
-		eigs = np.linalg.eigvals(Hq)
-		L = np.real(max(eigs))
-		mu = np.real(min(eigs))
-		cond = Q_s(L/mu)
-		eta = Q_s((np.sqrt(cond)-1)/(np.sqrt(cond)+1))
-		Hf = Q_matrix([[h/Q_s(L) for h in hv] for hv in Hq])
-		Ft = F.transpose()
-		Ff = Q_matrix([[Q_s(h)/Q_s(L) for h in hv] for hv in Ft])
-		self.eta = eta
-		self.Hf = Hf
-		mFf = np.negative(Ff)
-		self.mFft = fp_matrix(mFf,2*DEFAULT_PRECISION)
+        # After loading Np:
+        mpk = paillier.PaillierPublicKey(n=Np)
+        pubkey = LabHEPublicKey(mpk)  # ✅ wrap it correctly
+        self.pubkey = pubkey
 
-		coeff_z = np.eye(nc) - Hf;
-		self.coeff_z = fp_matrix(coeff_z)
+        fileH = "Data/H" + str(n) + "_" + str(m) + "_" + str(N) + ".txt"
+        H = np.loadtxt(fileH, delimiter=',')
+        fileF = "Data/F" + str(n) + "_" + str(m) + "_" + str(N) + ".txt"
+        F = np.loadtxt(fileF, delimiter=',')
+        fileG0 = "Data/G0" + str(n) + "_" + str(m) + "_" + str(N) + ".txt"
+        G0 = np.loadtxt(fileG0, delimiter=',')
+        fileK = "Data/K" + str(n) + "_" + str(m) + "_" + str(N) + ".txt"
+        K = np.loadtxt(fileK, delimiter=',')
+        Kc = K[0]
+        Kw = K[1]
+        self.Kc = int(Kc)
+        self.Kw = int(Kw)
 
-	def compute_coeff(self,x0):
-		coeff_0 = np.dot(self.mFft,x0)
-		self.coeff_0 = coeff_0
+        nc = m * N
+        self.nc = nc
+        Hq = Q_matrix(H)
+        eigs = np.linalg.eigvals(Hq)
+        L = np.real(max(eigs))
+        mu = np.real(min(eigs))
+        cond = Q_s(L / mu)
+        eta = Q_s((np.sqrt(cond) - 1) / (np.sqrt(cond) + 1))
+        Hf = Q_matrix([[h / Q_s(L) for h in hv] for hv in Hq])
+        Ft = F.transpose()
+        Ff = Q_matrix([[Q_s(h) / Q_s(L) for h in hv] for hv in Ft])
+        self.eta = eta
+        self.Hf = Hf
+        mFf = np.negative(Ff)
+        self.mFft = fp_matrix(mFf, 2 * DEFAULT_PRECISION)
 
-	def t_iterate(self,z):
-		return sum_encrypted_vectors(np.dot(self.coeff_z,z),self.coeff_0)
+        coeff_z = np.eye(nc) - Hf
+        self.coeff_z = fp_matrix(coeff_z)
 
-	def z_iterate(self,new_U,U):
-		new_z = [fp(1+self.eta)*v for v in new_U]
-		z = [fp(-self.eta)*v for v in U]
-		return sum_encrypted_vectors(new_z,z)
+    def compute_coeff(self, x0):
+        coeff_0 = np.dot(self.mFft, x0)
+        self.coeff_0 = coeff_0
+
+    def t_iterate(self, z):
+        return sum_encrypted_vectors(np.dot(self.coeff_z, z), self.coeff_0)
+
+    def z_iterate(self, new_U, U):
+        new_z = [fp(1 + self.eta) * v for v in new_U]
+        z = [fp(-self.eta) * v for v in U]
+        return sum_encrypted_vectors(new_z, z)
+
 
 
 def send_encr_data(encrypted_number_list):
@@ -149,7 +164,7 @@ def recv_size(the_socket):
 	return b''.join(total_data)
 
 def get_enc_data(received_dict,pubkey):
-	return [paillier.EncryptedNumber(pubkey, int(x)) for x in received_dict]
+	return [labhe.LabEncryptedNumber(pubkey, int(x)) for x in received_dict]
 
 def main():
 	

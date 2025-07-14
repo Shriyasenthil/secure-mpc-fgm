@@ -1,5 +1,4 @@
-# LabHE implementation from https://eprint.iacr.org/2017/326
-# Uses Paillier as underlying additively homomorphic encryption and Keccak as the PRF
+
 
 import random
 import hashlib
@@ -16,29 +15,26 @@ try:
 except ImportError:
     HAVE_GMP = False
 
-DEFAULT_KEYSIZE = 1024
+DEFAULT_KEYSIZE = 2048
 
 def generate_LabHE_keypair(usk, n_length=DEFAULT_KEYSIZE):
-   
-    mpk, msk = paillier.generate_paillier_keypair(None,n_length)
-    # lsk = msk, mpk.encrypt(usk)
-    # lpk = mpk, usk
-
+    mpk, msk = paillier.generate_paillier_keypair(None, n_length)
     lpk = LabHEPublicKey(mpk)
-    if len(usk) == 1:
-        lsk = LabHEPrivateKey(msk, mpk.encrypt(usk))
-    else:
-        lsk = LabHEPrivateKey(msk, util_fpv.encrypt_vector(mpk,usk))
 
+    if isinstance(usk, list) and len(usk) == 1:
+        upk = [mpk.encrypt(usk[0])]  # Encrypt the single element
+    else:
+        upk = util_fpv.encrypt_vector(mpk, usk)
+
+    lsk = LabHEPrivateKey(msk, upk)
     return lpk, lsk
 
+
 def Init():
-    """Initialize LabHE by generating Paillier keypair."""
+    
     from paillier import generate_paillier_keypair
     pubkey, privkey = generate_paillier_keypair()
     return privkey, pubkey
-
-
 
 class LabHEPublicKey(object):
     
@@ -46,50 +42,58 @@ class LabHEPublicKey(object):
         self.Pai_key = mpk
         self.n = mpk.n
         self.max_int = mpk.n // 3 - 1
-
+        self.nsquare = mpk.n ** 2 
     @property
     def n_sq(self):
-        return self.Pai_key.nsquare  # ✅ This will fix the AttributeError
-
+        return self.Pai_key.nsquare 
+    
     def offline_gen_secret(self, label, usk):
         
         self.usk = usk  
         hash = hashlib.sha3_224()
-        hash.update(('%s%s' % (bin(usk).encode('utf-8'), bin(label).encode('utf-8'))).encode('utf-8'))
+        hash.update((bin(usk) + str(label)).encode('utf-8'))
+
         secret = int(hash.hexdigest(),16)
         return secret
 
     def offline_encrypt(self, secret):
- 
+        pass
 
-    def encrypt(self, plaintext, secret, enc_secret=None, r_value=None):
- 
+    def encrypt(self, value, r_value=None):
+        return self.Pai_key.encrypt(value, r_value)
+
+    # Your LabHE-style encrypt with label/secret
+    def encrypt_with_label(self, plaintext, secret, enc_secret=None, r_value=None):
+        import numpy
+        from gmpy2 import mpz
+
         if not isinstance(secret, int) and not isinstance(secret, type(mpz(1))) and not isinstance(secret, numpy.integer):
-            raise TypeError('Expected int type secret but got: %s' %
-                            type(secret))
+            raise TypeError('Expected int type secret but got: %s' % type(secret))
         if not isinstance(plaintext, int) and not isinstance(plaintext, type(mpz(1))) and not isinstance(plaintext, numpy.integer):
-            raise TypeError('Expected int type plaintext but got: %s' %
-                            type(plaintext))
-        if not isinstance(enc_secret, paillier.EncryptedNumber) and enc_secret is not None:
-            raise TypeError('Expected encrypted secret to be type Paillier.EncryptedNumber or None but got: %s' %
-                            type(enc_secret))
+            raise TypeError('Expected int type plaintext but got: %s' % type(plaintext))
+        if enc_secret is not None and not isinstance(enc_secret, paillier.EncryptedNumber):
+            raise TypeError('Expected encrypted secret to be type Paillier.EncryptedNumber or None but got: %s' % type(enc_secret))
+
         if enc_secret is None:
-            ciphertext = plaintext - secret, self.Pai_key.encrypt(secret,r_value)
+            ciphertext = plaintext - secret, self.Pai_key.encrypt(secret, r_value)
         else:
             ciphertext = plaintext - secret, enc_secret
-        encrypted_number = LabEncryptedNumber(self, ciphertext)
-        return encrypted_number
+
+        return LabEncryptedNumber(self, ciphertext)
+
 
 
 class LabHEPrivateKey(object):
- 
     def __init__(self, msk, upk):
         self.msk = msk
         self.upk = upk
-        if len(upk) == 1:
-            self.usk = msk.decrypt(upk)
+        if isinstance(upk, list) and len(upk) == 1:
+            self.usk = msk.decrypt(upk[0])
+        elif isinstance(upk, list):
+            self.usk = util_fpv.decrypt_vector(msk, upk)
         else:
-            self.usk = util_fpv.decrypt_vector(msk,upk)
+            self.usk = msk.decrypt(upk)
+
         self.n = msk.n
         self.mpk = msk.public_key
 
@@ -98,121 +102,153 @@ class LabHEPrivateKey(object):
         return "<LabHEPrivateKey for {}>".format(pub_repr)
 
     def decrypt(self, encrypted_number, secret=None):
-     
-        if not isinstance(encrypted_number, LabEncryptedNumber) and not isinstance(encrypted_number, paillier.EncryptedNumber): 
-            raise TypeError('Expected encrypted_number to be an LabEncryptedNumber or paillier.EncryptedNumber'
-                            ' not: %s' % type(encrypted_number))
+        if not isinstance(encrypted_number, LabEncryptedNumber) and not isinstance(encrypted_number, paillier.EncryptedNumber):
+            raise TypeError('Expected encrypted_number to be a LabEncryptedNumber or Paillier EncryptedNumber, not: %s' % type(encrypted_number))
 
-        
+        # Case 1: LabHE-encrypted number
         if isinstance(encrypted_number, LabEncryptedNumber):
             if self.mpk != encrypted_number.mpk:
-                raise ValueError('encrypted_number was encrypted against a '
-                                 'different key!')
+                raise ValueError('Encrypted number was encrypted against a different key!')
 
-            if secret is None:
-                if len(encrypted_number.ciphertext) == 2:
-                    secret = self.raw_offline_decrypt(encrypted_number.ciphertext[1])
-                    ciphertext = encrypted_number.ciphertext[0]
+            ciphertext_data = encrypted_number.ciphertext
+
+            if isinstance(ciphertext_data, (list, tuple)):
+                if len(ciphertext_data) == 2:
+                    # Fully structured LabHE (c0, c1)
+                    if secret is None:
+                        secret = self.raw_offline_decrypt(ciphertext_data[1])
+                    elif isinstance(secret, paillier.EncryptedNumber):
+                        secret = self.raw_offline_decrypt(secret)
+                    elif not isinstance(secret, int):
+                        raise TypeError("Invalid secret type for decryption.")
+                    # if it's int, use directly
+                    ciphertext = ciphertext_data[0]
                 else:
-                    if len(encrypted_number.ciphertext) == 1:
-                        raise TypeError('Expected a secret as an input')
-            else:
-                if isinstance(secret, paillier.EncryptedNumber):
-                    secret = self.raw_offline_decrypt(secret)
+                    raise ValueError('Invalid ciphertext format: LabEncryptedNumber should be of length 2 if tuple/list.')
 
-            
-            ciphertext = encrypted_number.ciphertext[0]
+            elif isinstance(ciphertext_data, int):
+                # Single ciphertext value
+                if secret is None:
+                    raise TypeError('Decryption requires a secret for single-component LabEncryptedNumber.')
+                elif isinstance(secret, paillier.EncryptedNumber):
+                    secret = self.raw_offline_decrypt(secret)
+                elif not isinstance(secret, int):
+                    raise TypeError("Invalid secret type for decryption.")
+                # if it's int, use directly
+                ciphertext = ciphertext_data
+
+            else:
+                raise TypeError('LabEncryptedNumber.ciphertext must be int, list, or tuple — got %s' % type(ciphertext_data))
+
+        # Case 2: Paillier EncryptedNumber
         else:
             if secret is None:
-                raise TypeError('Expected a secret as an input')
-            else:
-                if isinstance(secret, paillier.EncryptedNumber):
-                    secret = self.raw_offline_decrypt(secret)
+                raise TypeError('Expected a secret as an input for PaillierEncryptedNumber')
+            elif isinstance(secret, paillier.EncryptedNumber):
+                secret = self.raw_offline_decrypt(secret)
+            elif not isinstance(secret, int):
+                raise TypeError("Invalid secret type for Paillier decryption.")
             ciphertext = self.msk.decrypt(encrypted_number)
 
         return self.raw_decrypt(ciphertext, secret)
 
 
-    def raw_decrypt(self, ciphertext, secret):
-     
-        if not isinstance(ciphertext, int) and not isinstance(ciphertext, type(mpz(1))) and not isinstance(ciphertext, numpy.int64):
-            raise TypeError('Expected ciphertext to be an int, not: %s' %
-                type(ciphertext))
 
+    def raw_decrypt(self, ciphertext, secret):
+        if not isinstance(ciphertext, int) and not isinstance(ciphertext, type(mpz(1))) and not isinstance(ciphertext, numpy.int64):
+            raise TypeError('Expected ciphertext to be an int, not: %s' % type(ciphertext))
 
         value = ciphertext + secret
-        if value < self.n/3:
+        if value < self.n / 3:
             return int(value)
         else:
             return int(value - self.n)
 
     def raw_offline_decrypt(self, encr_secret):
-   
+        if isinstance(encr_secret, int):
+            encr_secret = paillier.EncryptedNumber(self.msk.public_key, encr_secret, 0)
+
+        if not isinstance(encr_secret, paillier.EncryptedNumber):
+            raise TypeError(f"Expected EncryptedNumber for raw_offline_decrypt, got {type(encr_secret)}")
+
         secret = self.msk.decrypt(encr_secret)
         return secret
 
 class LabEncryptedNumber(object):
-  
-
-    ####### There are two types of ciphertexts, beware! LabEncryptedNumber and paillier.EncryptedNumber
     def __init__(self, mpk, ciphertext):
         self.mpk = mpk
         self.ciphertext = ciphertext
-        if isinstance(self.ciphertext, LabEncryptedNumber) | isinstance(self.ciphertext, paillier.EncryptedNumber):
+        if isinstance(self.ciphertext, LabEncryptedNumber) or isinstance(self.ciphertext, paillier.EncryptedNumber):
             raise TypeError('Ciphertext should be an integer')
         if not isinstance(self.mpk, LabHEPublicKey):
             raise TypeError('mpk should be a LabHEPublicKey')
 
     def __add__(self, other):
-        """Add an int, `LabEncryptedNumber` or `EncodedNumber`."""
-        if isinstance(other, LabEncryptedNumber) | isinstance(other, paillier.EncryptedNumber):
+        """Add a LabEncryptedNumber, Paillier EncryptedNumber, or scalar."""
+        if isinstance(other, LabEncryptedNumber) or isinstance(other, paillier.EncryptedNumber):
             return self._add_encrypted(other)
         else:
             return self._add_scalar(other)
 
     def __radd__(self, other):
-      
         return self.__add__(other)
-    
 
-import gmpy2
-from gmpy2 import mpz
-
-class LabEncryptedNumber:
-
-    def __init__(self, mpk, ciphertext):
-        self.mpk = mpk  # LabHEPublicKey
-        self.ciphertext = ciphertext  # Tuple (c0, c1)
-    ...
     def __mul__(self, other):
-        """Multiply by a scalar (int or mpz) or another LabEncryptedNumber."""
-        if isinstance(other, LabEncryptedNumber):
-            return self._mul_encrypted(other)
+        return self._mul_scalar(other)
 
-        elif isinstance(other, (int, mpz, gmpy2.mpz)):
-            if isinstance(other, mpz) or isinstance(other, gmpy2.mpz):
-                other = int(other)  # convert mpz to native int
+    def _mul_scalar(self, scalar):
+        """
+        Simplified scalar multiplication that should work with your hybrid ciphertext.
+        """
+        # Type checking
+        if isinstance(scalar, (list, tuple)):
+            raise TypeError("Expected scalar value (int), got list or tuple — possibly malformed ciphertext")
+        if not isinstance(scalar, int):
+            raise TypeError(f"Unsupported type for scalar multiplication: {type(scalar)}")
 
-            if other < 0:
-                other = other + self.mpk.n
-            return self._mul_scalar(other)
+        # Handle zero
+        if scalar == 0:
+            zero_c1 = self.mpk.encrypt(0)
+            return LabEncryptedNumber(self.mpk, (0, zero_c1))
 
-        else:
-            raise TypeError(f"Unsupported type for multiplication: {type(other)}")
+        c0, c1_encrypted = self.ciphertext
 
-    def __add__(self, other):
-       if isinstance(other, LabEncryptedNumber):
-           c0 = (self.ciphertext[0] + other.ciphertext[0]) % self.mpk.n_sq
-           c1 = self.ciphertext[1] + other.ciphertext[1]  # Do NOT mod encrypted part
-           return LabEncryptedNumber(self.mpk, (c0, c1))
+        # Use the paillier library's built-in scalar multiplication for c1
+        new_c1_encrypted = c1_encrypted * scalar
 
-       else:
-           raise TypeError("Addition only supported between LabEncryptedNumbers.")
+        # For c0, just scale it directly
+        new_c0 = c0 * scalar
+
+        return LabEncryptedNumber(self.mpk, (new_c0, new_c1_encrypted))
+
+    def _encrypt_zero(self):
+        """Helper method to create an encryption of zero"""
+        # This depends on your specific encryption scheme
+        # For Paillier, encryption of 0 would be a random value r^n mod n^2
+        import random
+        r = random.randint(1, self.mpk.n - 1)
+        zero_c0 = pow(r, self.mpk.n, self.mpk.nsquare)
+
+        # For c1, encrypt 0 using the standard Paillier encryption
+        zero_c1 = self.mpk.encrypt(0)  # Assuming mpk has encrypt method
+
+        return LabEncryptedNumber(self.mpk, (zero_c0, zero_c1))
+
+    def _negate(self):
+        """Helper method to negate an encrypted number"""
+        # For Paillier encryption, negation is done by computing the modular inverse
+        c0, c1_encrypted = self.ciphertext
+
+        # Negate c0 by computing its modular inverse
+        neg_c0 = pow(c0, self.mpk.n - 1, self.mpk.nsquare)
+
+        # Negate c1 using the EncryptedNumber's negation
+        neg_c1_encrypted = -c1_encrypted
+
+        return LabEncryptedNumber(self.mpk, (neg_c0, neg_c1_encrypted))
 
 
-        
-    def __radd__(self, other):
-       return self.__add__(other)
+
 
     def __rmul__(self, other):
         return self.__mul__(other)
@@ -226,6 +262,13 @@ class LabEncryptedNumber:
     def __truediv__(self, scalar):
         return self.__mul__(1 / scalar)
 
+    # def ciphertext(self):
+    #     """Return the ciphertext of the LabEncryptedNumber.
+
+    #     Returns:
+    #       int, int , the ciphertext. 
+    #     """
+    #     return self.ciphertext
 
     def _add_scalar(self, scalar):
  
@@ -235,7 +278,7 @@ class LabEncryptedNumber:
         if len(a)==2:
             sum_ciphertext = a[0]+b, a[1]
         else:
-            sum_ciphertext = a + b # The override of sum is taken care in Paillier
+            sum_ciphertext = a + b 
         return LabEncryptedNumber(self.mpk, sum_ciphertext)
 
     def _add_encrypted(self, other):
@@ -273,7 +316,22 @@ class LabEncryptedNumber:
 
 
     def _mul_scalar(self, plaintext):
-   
+        """Returns the E(a * plaintext), where E(a) = ciphertext
+
+        Args:
+          plaintext (int): number by which to multiply the
+            `LabEncryptedNumber`. *plaintext* is typically an encoding.
+            0 <= *plaintext* < :attr:`~PaillierPublicKey.n`
+
+        Returns:
+          LabEncryptedNumber: if E(a) = (a-s,[[s]]), return ((a-s)b,Pai_mult([[s]],b)),
+            else if E(a) = [[a]], return Pai_mult([[a]],b)
+
+        Raises:
+          TypeError: if *plaintext* is not an int.
+          ValueError: if *plaintext* is not between 0 and
+            :attr:`PaillierPublicKey.n`.
+        """
         if not isinstance(plaintext, int) and not isinstance(plaintext, type(mpz(1))) and not isinstance(plaintext, numpy.int64):
             raise TypeError('Expected ciphertext to be int, not %s' %
                 type(plaintext))

@@ -324,3 +324,19 @@ def dot_m_encrypted_vectors(enc_vec, plain_mat):
 
 
 
+def clamp_scalar(val, max_abs_val):
+    """Clamp value to the LabHE-supported range [-max_abs_val, max_abs_val]."""
+    if val > max_abs_val:
+        return max_abs_val
+    elif val < -max_abs_val:
+        return -max_abs_val
+    return val
+
+
+def fp_encode(val, lf):
+    """Fixed-point encode a float with given scaling factor lf"""
+    return int(round(val * (1 << lf)))
+
+def fp_decode(val, lf):
+    """Fixed-point decode an integer to float with given scaling factor lf"""
+    return float(val) / (1 << lf)

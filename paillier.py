@@ -103,37 +103,34 @@ class PaillierPublicKey(object):
 
         return self.encrypt_encoded(encoding, r_value)
 
-
 class PaillierPrivateKey(object):
  
     def __init__(self, public_key, p, q):
-        if not p*q == public_key.n:
+        if not p * q == public_key.n:
             raise ValueError('given public key does not match the given p and q.')
-        if p == q: #check that p and q are different, otherwise we can't compute p^-1 mod q
+        if p == q:  # check that p and q are different, otherwise we can't compute p^-1 mod q
             raise ValueError('p and q have to be different')
         self.public_key = public_key
-        if q < p: #ensure that p < q. 
+        if q < p:  # ensure that p < q
             self.p = q
             self.q = p
         else:
             self.p = p
             self.q = q
         self.psquare = self.p * self.p
-        
         self.qsquare = self.q * self.q
         self.p_inverse = invert(self.p, self.q)
-        self.hp = self.h_function(self.p, self.psquare);
-        self.hq = self.h_function(self.q, self.qsquare);
+        self.hp = self.h_function(self.p, self.psquare)
+        self.hq = self.h_function(self.q, self.qsquare)
         self.n = public_key.n
 
     @staticmethod
     def from_totient(public_key, totient):
-     
         p_plus_q = public_key.n - totient + 1
         p_minus_q = isqrt(p_plus_q * p_plus_q - public_key.n * 4)
         q = (p_plus_q - p_minus_q) // 2
         p = p_plus_q - q
-        if not p*q == public_key.n:
+        if not p * q == public_key.n:
             raise ValueError('given public key and totient do not match.')
         return PaillierPrivateKey(public_key, p, q)
         
@@ -142,7 +139,6 @@ class PaillierPrivateKey(object):
         return "<PaillierPrivateKey for {}>".format(pub_repr)
 
     def decrypt(self, encrypted_number):
-       
         if not isinstance(encrypted_number, EncryptedNumber):
             raise TypeError('Expected encrypted_number to be an EncryptedNumber'
                             ' not: %s' % type(encrypted_number))
@@ -152,23 +148,20 @@ class PaillierPrivateKey(object):
                              'different key!')
 
         return self.raw_decrypt(encrypted_number.ciphertext(be_secure=False))
-        # encoded = Encoding(self.public_key, encoded,
-        #                      encrypted_number.exponent)
-        # return encoded.decode()
 
     def raw_decrypt(self, ciphertext):
-      
-        if not isinstance(ciphertext, int) and not isinstance(ciphertext, type(mpz(1))) and not isinstance(scalar, numpy.int64):
-            raise TypeError('Expected ciphertext to be an int, not: %s' %
-                type(ciphertext))
+        if not isinstance(ciphertext, int) and not isinstance(ciphertext, type(mpz(1))) and not isinstance(ciphertext, numpy.int64):
+            raise TypeError('Expected ciphertext to be an int, not: %s' % type(ciphertext))
 
-        decrypt_to_p = self.l_function(powmod(ciphertext, self.p-1, self.psquare), self.p) * self.hp % self.p
-        decrypt_to_q = self.l_function(powmod(ciphertext, self.q-1, self.qsquare), self.q) * self.hq % self.q
+        decrypt_to_p = self.l_function(powmod(ciphertext, self.p - 1, self.psquare), self.p) * self.hp % self.p
+        decrypt_to_q = self.l_function(powmod(ciphertext, self.q - 1, self.qsquare), self.q) * self.hq % self.q
         value = self.crt(decrypt_to_p, decrypt_to_q)
-        if value < self.n/3:
+
+        if value < self.n / 3:
             return value
         else:
             return value - self.n
+
     
     def h_function(self, x, xsquare):
        
