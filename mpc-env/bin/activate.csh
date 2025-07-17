@@ -9,17 +9,17 @@ alias deactivate 'test $?_OLD_VIRTUAL_PATH != 0 && setenv PATH "$_OLD_VIRTUAL_PA
 # Unset irrelevant variables.
 deactivate nondestructive
 
-setenv VIRTUAL_ENV /home/control-lab/Desktop/shriya/secure-mpc-fgm/mpc-env
+setenv VIRTUAL_ENV "/workspaces/secure-mpc-fgm/mpc-env"
 
 set _OLD_VIRTUAL_PATH="$PATH"
-setenv PATH "$VIRTUAL_ENV/"bin":$PATH"
+setenv PATH "$VIRTUAL_ENV/bin:$PATH"
 
 
 set _OLD_VIRTUAL_PROMPT="$prompt"
 
 if (! "$?VIRTUAL_ENV_DISABLE_PROMPT") then
-    set prompt = '(mpc-env) '"$prompt"
-    setenv VIRTUAL_ENV_PROMPT '(mpc-env) '
+    set prompt = "(mpc-env) $prompt"
+    setenv VIRTUAL_ENV_PROMPT "(mpc-env) "
 endif
 
 alias pydoc python -m pydoc

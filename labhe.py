@@ -198,28 +198,31 @@ class LabEncryptedNumber(object):
 
     def _mul_scalar(self, scalar):
         """
-        Simplified scalar multiplication that should work with your hybrid ciphertext.
-        """
-        # Type checking
+    Performs scalar multiplication of a LabEncryptedNumber with an integer.
+    Works for both positive and negative integers.
+         """
+    # Type checks
         if isinstance(scalar, (list, tuple)):
             raise TypeError("Expected scalar value (int), got list or tuple — possibly malformed ciphertext")
         if not isinstance(scalar, int):
             raise TypeError(f"Unsupported type for scalar multiplication: {type(scalar)}")
 
-        # Handle zero
+      # Zero handling
         if scalar == 0:
-            zero_c1 = self.mpk.encrypt(0)
-            return LabEncryptedNumber(self.mpk, (0, zero_c1))
+            return self._encrypt_zero()
 
+      # Handle negative scalars
+        if scalar < 0:
+        # Recursive call with absolute value
+            positive_result = self._mul_scalar(-scalar)
+            return positive_result._negate()  # You MUST implement _negate()
+
+    # Positive scalar: scale each part
         c0, c1_encrypted = self.ciphertext
-
-        # Use the paillier library's built-in scalar multiplication for c1
-        new_c1_encrypted = c1_encrypted * scalar
-
-        # For c0, just scale it directly
         new_c0 = c0 * scalar
-
+        new_c1_encrypted = c1_encrypted * scalar
         return LabEncryptedNumber(self.mpk, (new_c0, new_c1_encrypted))
+
 
     def _encrypt_zero(self):
         """Helper method to create an encryption of zero"""
