@@ -19,7 +19,7 @@ try:
 except ImportError:
 	HAVE_GMP = False
 
-DEFAULT_KEYSIZE = 512					        
+DEFAULT_KEYSIZE = 1024					        
 DEFAULT_MSGSIZE = 64 					    
 DEFAULT_SECURITYSIZE = 100				        
 DEFAULT_PRECISION = int(DEFAULT_MSGSIZE/2)     
@@ -36,13 +36,10 @@ def decrypt_vector(privkey, x):
     result = []
     for i in x:
         if isinstance(i, labhe.LabEncryptedNumber):
-            # LabHE encryption - use LabHE private key
             result.append(privkey.decrypt(i))
         elif isinstance(i, paillier.EncryptedNumber):
-            # Paillier encryption - use Paillier private key directly
             result.append(privkey.msk.decrypt(i))
         else:
-            # Handle other cases or raise error
             raise TypeError(f"Unknown encryption type: {type(i)}")
     return np.array(result)
 
@@ -89,7 +86,7 @@ import labhe
 
 DEFAULT_KEYSIZE = 512
 DEFAULT_MSGSIZE = 10
-seed = 42  # Define this globally or pass as parameter if needed
+seed = 42 
 
 
 
@@ -203,11 +200,11 @@ def get_enc_data(received_list, pubkey):
     result = []
     for x in received_list:
         if isinstance(x, (list, tuple)) and len(x) == 2:
-            # Case: LabHE ciphertext with both components
+
             c0, c1 = int(x[0]), int(x[1])
             result.append(labhe.LabEncryptedNumber(pubkey, (c0, c1)))
         elif isinstance(x, (int, str)):
-            # Possibly Paillier ciphertext — wrap as (c0, 0) to match LabHE format
+          
             c0 = int(x)
             result.append(labhe.LabEncryptedNumber(pubkey, (c0, 0)))
         else:

@@ -1,9 +1,9 @@
 
 from gmpy2 import mpz, mpz_urandomb, random_state, next_prime, powmod
 
-DEFAULT_KEYSIZE = 512
-DEFAULT_MSGSIZE = 20
-DEFAULT_SECURITYSIZE = 160
+DEFAULT_KEYSIZE = 1024
+DEFAULT_MSGSIZE = 64
+DEFAULT_SECURITYSIZE = 100
 
 rand = random_state()
 

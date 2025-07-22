@@ -1,8 +1,8 @@
 import labhe
-from util_fpv import fp_encode, fp_decode  # fixed-point helpers
+from util_fpv import fp_encode, fp_decode
 from gmpy2 import mpz
 
-lf = 32  # fixed-point scaling factor
+lf = 32  
 
 # Step 1: Generate LabHE keys
 usk = [1234]
@@ -16,11 +16,9 @@ scalar = 2.5
 pt_fp = fp_encode(plaintext, lf)
 sc_fp = fp_encode(scalar, lf)
 
-# ========== 🔑 Key Lines to Insert ==========
-# Encrypt using plain Paillier (bypass LabHE)
-enc = pubkey.Pai_key.encrypt(pt_fp)       # <-- this line
-enc_scaled = enc * sc_fp                  # <-- and this line
-# ============================================
+# Encrypt using plain Paillier
+enc = pubkey.Pai_key.encrypt(pt_fp)     
+enc_scaled = enc * sc_fp                
 
 # Step 5: Decrypt
 decrypted_fp = privkey.msk.decrypt(enc_scaled)
@@ -37,5 +35,5 @@ print("Decrypted:", result)
 print("Difference:", abs(result - expected))
 
 # Step 8: Assert correctness
-assert abs(result - expected) < 1e-3, "❌ Scalar multiplication failed!"
-print("✅ Scalar multiplication test passed.")
+assert abs(result - expected) < 1e-3, " Scalar multiplication failed!"
+print(" Scalar multiplication test passed.")

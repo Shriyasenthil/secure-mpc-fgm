@@ -15,7 +15,7 @@ from pathlib import Path
 import os
 import labhe
 
-DEFAULT_KEYSIZE = 512						
+DEFAULT_KEYSIZE = 1024						
 DEFAULT_MSGSIZE = 64 						
 DEFAULT_SECURITYSIZE = 100					
 DEFAULT_PRECISION = int(DEFAULT_MSGSIZE/2)	
@@ -107,9 +107,6 @@ def retrieve_fp_matrix(mat,prec=DEFAULT_PRECISION):
 	return [retrieve_fp_vector(x,prec) for x in mat]
 
 
-DEFAULT_KEYSIZE = 512
-DEFAULT_MSGSIZE = 10
-
 class Client:
     def __init__(self, l=DEFAULT_MSGSIZE):
         self.l = l
@@ -132,11 +129,9 @@ class Client:
         q = mpz(data[1][0])
         msk = PaillierPrivateKey(pubkey.Pai_key, p, q)
 
-        #Fix: Use PaillierPublicKey.encrypt() instead of raw_encrypt
-        usk = p  # Example user secret key
-        upk = [pubkey.Pai_key.encrypt(usk)]  # Must be an EncryptedNumber
-
-        # Now safe to initialize LabHEPrivateKey
+    
+        usk = p  
+        upk = [pubkey.Pai_key.encrypt(usk)] 
         self.privkey = labhe.LabHEPrivateKey(msk, upk)
 
 

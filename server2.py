@@ -19,12 +19,12 @@ from labhe import LabEncryptedNumber
 import random
 
 
-DEFAULT_KEYSIZE = 512						
+DEFAULT_KEYSIZE = 1024						
 DEFAULT_MSGSIZE = 64 						
 DEFAULT_SECURITYSIZE = 100					
 DEFAULT_PRECISION = int(DEFAULT_MSGSIZE/2)	
 DEFAULT_DGK = 160							
-KEYSIZE_DGK = 512						
+KEYSIZE_DGK = 1024						
 MSGSIZE_DGK = 20							
 NETWORK_DELAY = 0 		
 
@@ -80,8 +80,6 @@ def encrypt_vector_DGK(pubkey, x, coins=None):
 def decrypt_vector_DGK(privkey, x):
     return np.array([privkey.raw_decrypt0(i) for i in x])
 
-"""We take the convention that a number x < N/3 is positive, and that a number x > 2N/3 is negative. 
-	The range N/3 < x < 2N/3 allows for overflow detection.""" 
 
 def Q_s(scalar,prec=DEFAULT_PRECISION):
 	return int(scalar*(2**prec))/(2**prec)
@@ -141,8 +139,8 @@ class Server2:
             msk = PaillierPrivateKey(mpk, p, q)
 
             # Dummy upk used just to satisfy constructor — not used for decryption
-            c0 = pubkey.Pai_key.encrypt(0)  # Paillier encryption of 0
-            dummy_ciphertext = (c0, c0)      # LabHE expects a 2-element structure
+            c0 = pubkey.Pai_key.encrypt(0) 
+            dummy_ciphertext = (c0, c0)     
             dummy_upk = [LabEncryptedNumber(pubkey, dummy_ciphertext)]
 
             privkey = labhe.LabHEPrivateKey(msk, dummy_upk)
@@ -259,7 +257,7 @@ def get_enc_data(received_list, pubkey):
             result.append(labhe.LabEncryptedNumber(pubkey, (c0, c1)))
         elif isinstance(x, int):
             # Paillier-style ciphertext, treated as rerandomized (only c0)
-            result.append(labhe.LabEncryptedNumber(pubkey, (int(x),)))  # single-element tuple
+            result.append(labhe.LabEncryptedNumber(pubkey, (int(x),)))  
         else:
             raise TypeError(f"Invalid ciphertext format: expected (c0, c1) or int, got {x}")
     return result

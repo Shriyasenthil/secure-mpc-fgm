@@ -1,8 +1,8 @@
 import labhe
 from gmpy2 import mpz
-from util_fpv import fp_encode, fp_decode  # Your fixed-point encoding/decoding
+from util_fpv import fp_encode, fp_decode  
 
-lf = 32  # Fixed-point scaling factor
+lf = 32  
 
 # Step 1: Generate LabHE keys
 usk = [1234]
@@ -38,5 +38,5 @@ print("Scalar:", scalar)
 print("Expected:", expected)
 print("Decrypted:", result)
 
-assert abs(result - expected) < 1e-3, "❌ Fixed-point scalar multiplication failed!"
-print("✅ Fixed-point scalar multiplication passed.")
+assert abs(result - expected) < 1e-3, " Fixed-point scalar multiplication failed!"
+print(" Fixed-point scalar multiplication passed.")

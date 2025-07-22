@@ -2,7 +2,7 @@ import labhe
 from gmpy2 import mpz
 from util_fpv import fp_encode, fp_decode
 
-lf = 32  # Fixed-point scaling factor
+lf = 32  
 
 # Step 1: Generate LabHE keys (internally generates Paillier keys)
 usk = [1234]
@@ -32,5 +32,5 @@ print("Scalar:", scalar)
 print("Expected:", float_val * scalar)
 print("Decrypted:", result)
 
-assert abs(result - (float_val * scalar)) < 1e-3, "❌ Scalar multiplication failed!"
-print("✅ Scalar multiplication passed.")
+assert abs(result - (float_val * scalar)) < 1e-3, " Scalar multiplication failed!"
+print(" Scalar multiplication passed.")

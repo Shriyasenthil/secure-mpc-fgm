@@ -3,8 +3,8 @@ import random
 from gmpy2 import mpz, powmod, invert
 
 
-DEFAULT_KEYSIZE = 512
-DEFAULT_SECURITYSIZE = 160
+DEFAULT_KEYSIZE = 1024
+DEFAULT_SECURITYSIZE = 100
 
 try:
     import gmpy2

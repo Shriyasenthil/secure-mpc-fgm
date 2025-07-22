@@ -14,16 +14,13 @@ except ImportError:
     HAVE_GMP = False
 
 
-# When changing default sizes, remember to change in all other classes: Client, Actuator, util_fpv and keys in paillier and LabHE
+
 DEFAULT_KEYSIZE = 1024
-DEFAULT_MSGSIZE = 48 
+DEFAULT_MSGSIZE = 64 
 DEFAULT_PRECISION = 24
 DEFAULT_SECURITYSIZE = 100
 DEFAULT_DGK = 160
-NETWORK_DELAY = 0 #0.01 # 10 ms
-
-"""We take the convention that a number x < N/3 is positive, and that a number x > 2N/3 is negative. 
-The range N/3 < x < 2N/3 allows for overflow detection."""
+NETWORK_DELAY = 0 
 
 
 def encrypt(pubkey, x, coins=None):
@@ -305,19 +302,14 @@ def dot_sc_encrypted_vectors(x, y):
     return reduce(operator.add, mul_sc_encrypted_vectors(x, y))
 
 def dot_m_encrypted_vectors(enc_vec, plain_mat):
-    """
-    Matrix-vector product: result = M * ⟦v⟧
-    - plain_mat: list of row vectors (matrix M)
-    - enc_vec: encrypted vector ⟦v⟧
-    Returns a list of encrypted dot products
-    """
+
     result = []
     for row in plain_mat:
         if len(row) != len(enc_vec):
             raise ValueError("Row length does not match enc_vec length")
         dot = None
         for e, a in zip(enc_vec, row):
-            prod = e * a  # scalar multiplication
+            prod = e * a 
             dot = prod if dot is None else dot + prod
         result.append(dot)
     return result
@@ -325,7 +317,7 @@ def dot_m_encrypted_vectors(enc_vec, plain_mat):
 
 
 def clamp_scalar(val, max_abs_val):
-    """Clamp value to the LabHE-supported range [-max_abs_val, max_abs_val]."""
+    #Clamp value to the LabHE-supported range [-max_abs_val, max_abs_val].
     if val > max_abs_val:
         return max_abs_val
     elif val < -max_abs_val:
@@ -334,9 +326,9 @@ def clamp_scalar(val, max_abs_val):
 
 
 def fp_encode(val, lf):
-    """Fixed-point encode a float with given scaling factor lf"""
+    #Fixed-point encode a float with given scaling factor lf
     return int(round(val * (1 << lf)))
 
 def fp_decode(val, lf):
-    """Fixed-point decode an integer to float with given scaling factor lf"""
+    #Fixed-point decode an integer to float with given scaling factor lf
     return float(val) / (1 << lf)

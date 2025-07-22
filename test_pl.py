@@ -6,11 +6,10 @@ from util_fpv import fp_encode, fp_decode, encrypt_vector
 from gmpy2 import mpz
 import random
 
-DEFAULT_KEYSIZE = 512
-lf = 32  # Fixed-point scale factor
-
+DEFAULT_KEYSIZE = 1024
+lf = 32  
 def generate_keys():
-    # Simulate key setup
+    #  key setup
     p = mpz('10668181328669357029')
     q = mpz('10668181328669357051')
     pub = PaillierPublicKey(n=p * q)
@@ -23,7 +22,7 @@ def generate_keys():
 
 def main():
     lab_pub, lab_priv, usk = generate_keys()
-    print("🔐 Public and private keys ready")
+    print(" Public and private keys ready")
 
     # Input
     plaintext = 3.1415
@@ -54,17 +53,17 @@ def main():
     # Decrypt
     secret = lab_pub.offline_gen_secret("dummy", usk[0])
     final_value = lab_priv.decrypt(relabeled, secret=secret)
-    print(f"🔓 Final decrypted value: {final_value}")
+    print(f" Final decrypted value: {final_value}")
 
     # Decode with 2 * lf due to both inputs being scaled
     decoded = fp_decode(final_value, 2 * lf)
-    print(f"✅ Decoded final result: {decoded}")
+    print(f" Decoded final result: {decoded}")
 
     # Check correctness
     expected = plaintext * scalar
     print(f"Expected: {expected}")
     print(f"Difference: {abs(decoded - expected)}")
-    assert abs(decoded - expected) < 1e-3, "❌ Scalar multiplication failed!"
+    assert abs(decoded - expected) < 1e-3, " Scalar multiplication failed!"
 
 if __name__ == '__main__':
     main()

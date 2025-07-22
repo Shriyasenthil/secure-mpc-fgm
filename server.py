@@ -19,7 +19,7 @@ try:
 except ImportError:
 	HAVE_GMP = False
 
-DEFAULT_KEYSIZE = 512						
+DEFAULT_KEYSIZE = 1024						
 DEFAULT_MSGSIZE = 64 						
 DEFAULT_SECURITYSIZE = 100					
 DEFAULT_PRECISION = int(DEFAULT_MSGSIZE/2)	
@@ -84,7 +84,7 @@ class Server:
 
         # After loading Np:
         mpk = paillier.PaillierPublicKey(n=Np)
-        pubkey = LabHEPublicKey(mpk)  # ✅ wrap it correctly
+        pubkey = LabHEPublicKey(mpk)
         self.pubkey = pubkey
 
         fileH = "Data/H" + str(n) + "_" + str(m) + "_" + str(N) + ".txt"

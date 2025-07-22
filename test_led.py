@@ -28,5 +28,5 @@ print("Original:", plaintext)
 print("Decrypted:", decrypted_val)
 print("Difference:", abs(decrypted_val - plaintext))
 
-assert abs(decrypted_val - plaintext) < 1e-3, "❌ LabHE encrypt/decrypt failed!"
-print("✅ LabHE encrypt/decrypt passed.")
+assert abs(decrypted_val - plaintext) < 1e-3, " LabHE encrypt/decrypt failed!"
+print(" LabHE encrypt/decrypt passed.")
