@@ -1,361 +1,294 @@
 #!/usr/bin/env python3
 
 import socket
-import sys,struct
+import sys, struct
 import json
-from gmpy2 import mpz, random_state, mpz_urandomb, powmod
+from gmpy2 import mpz
 import paillier
-from paillier import PaillierPublicKey,PaillierPrivateKey
 import numpy as np
 import time
 import random
 import os
-import util_fpv 
-from util_fpv import clamp_scalar
-import labhe
+
 try:
-	import gmpy2
-	HAVE_GMP = True
+    import gmpy2
+    HAVE_GMP = True
 except ImportError:
-	HAVE_GMP = False
+    HAVE_GMP = False
 
-DEFAULT_KEYSIZE = 512					        
-DEFAULT_MSGSIZE = 64 					    
-DEFAULT_SECURITYSIZE = 100				        
-DEFAULT_PRECISION = int(DEFAULT_MSGSIZE/2)     
-NETWORK_DELAY = 0
+DEFAULT_KEYSIZE = 512                      # RSA modulus bits
+DEFAULT_MSGSIZE = 64                       # Plaintext bits
+DEFAULT_SECURITYSIZE = 100                 # One-time pad bits
+DEFAULT_PRECISION = int(DEFAULT_MSGSIZE/2) # Fractional bits
+NETWORK_DELAY = 0                          # Network delay simulation
 
-seed = 42	
-def encrypt_vector(pubkey, x, coins=None):
+seed = 42  # Random seed
+
+
+def encrypt_vals(pubkey, values, coins=None):
     if coins is None:
-        return [pubkey.encrypt(y) for y in x]
+        encrypted = [pubkey.encrypt(v) for v in values]
     else:
-        return [pubkey.encrypt(y, coins.pop()) for y in x]
-
-def decrypt_vector(privkey, x):
-    result = []
-    for i in x:
-        if isinstance(i, labhe.LabEncryptedNumber):
-            result.append(privkey.decrypt(i))
-        else:
-            raise TypeError(f"Unknown encryption type: {type(i)}")
-    return np.array(result)
+        encrypted = [pubkey.encrypt(v, coins.pop()) for v in values]
+    print(f"[DEBUG] Encrypted {len(encrypted)} values")
+    return encrypted
 
 
-def Q_s(scalar,prec=DEFAULT_PRECISION):
-	return int(scalar*(2**prec))/(2**prec)
-
-def Q_vector(vec,prec=DEFAULT_PRECISION):
-	if np.size(vec)>1:
-		return [Q_s(x,prec) for x in vec]
-	else:
-		return Q_s(vec,prec)
-
-def Q_matrix(mat,prec=DEFAULT_PRECISION):
-	return [Q_vector(x,prec) for x in mat]
-
-def fp(val, lf=32, max_val=None):
-    scale = 2 ** lf
-    fixed = int(round(val * scale))
-    if max_val is not None:
-        return clamp_scalar(fixed, max_val)
-    return fixed
-
-def fp_vector(vec, lf=32, max_val=None):
-    scale = 2 ** lf
-    return [clamp_scalar(int(round(v * scale)), max_val) if max_val is not None else int(round(v * scale)) for v in vec]
+def decrypt_vals(privkey, encrypted_values):
+    decrypted = np.array([privkey.decrypt(c) for c in encrypted_values])
+    print(f"[DEBUG] Decrypted {len(decrypted)} values")
+    return decrypted
 
 
-def retrieve_fp(scalar,prec=DEFAULT_PRECISION):
-	return scalar/(2**prec)
-
-def retrieve_fp_vector(vec,prec=DEFAULT_PRECISION):
-	return [retrieve_fp(x,prec) for x in vec]
-
+def quant_scalar(scalar, precision=DEFAULT_PRECISION):
+    q = int(scalar * (2**precision)) / (2**precision)
+    print(f"[DEBUG] Quantized scalar {scalar} to {q}")
+    return q
 
 
+def quant_vector(vector, precision=DEFAULT_PRECISION):
+    if np.size(vector) > 1:
+        qvec = [quant_scalar(x, precision) for x in vector]
+    else:
+        qvec = quant_scalar(vector, precision)
+    print(f"[DEBUG] Quantized vector with size {np.size(vector)}")
+    return qvec
 
 
+def quant_matrix(matrix, precision=DEFAULT_PRECISION):
+    qmat = [quant_vector(row, precision) for row in matrix]
+    print(f"[DEBUG] Quantized matrix with {len(matrix)} rows")
+    return qmat
+
+
+def fixed_point_scalar(scalar, precision=DEFAULT_PRECISION):
+    fp_val = mpz(scalar * (2**precision))
+    print(f"[DEBUG] Fixed point scalar: {scalar} -> {fp_val}")
+    return fp_val
+
+
+def fixed_point_vector(vector, precision=DEFAULT_PRECISION):
+    if np.size(vector) > 1:
+        fp_vec = [fixed_point_scalar(x, precision) for x in vector]
+    else:
+        fp_vec = fixed_point_scalar(vector, precision)
+    print(f"[DEBUG] Converted vector to fixed point with size {np.size(vector)}")
+    return fp_vec
+
+
+def retrieve_fixed_point(scalar, precision=DEFAULT_PRECISION):
+    val = scalar / (2 ** precision)
+    print(f"[DEBUG] Retrieved fixed point scalar: {scalar} -> {val}")
+    return val
+
+
+def retrieve_fixed_point_vector(vector, precision=DEFAULT_PRECISION):
+    vals = [retrieve_fixed_point(x, precision) for x in vector]
+    print(f"[DEBUG] Retrieved fixed point vector of size {len(vector)}")
+    return vals
 
 
 class Client:
     def __init__(self, l=DEFAULT_MSGSIZE):
-        self.l = l
         try:
-            # Load public key
-            filepub = f"Keys/pubkey{DEFAULT_KEYSIZE}.txt"
-            with open(filepub, 'r') as fin:
-                data = [line.split() for line in fin]
-                Np = int(data[0][0])
+            pub_file = f"Keys/pubkey{DEFAULT_KEYSIZE}.txt"
+            with open(pub_file, 'r') as fpub:
+                data = [line.split() for line in fpub]
+            Np = int(data[0][0])
+            pubkey = paillier.PaillierPublicKey(n=Np)
 
-            mpk = PaillierPublicKey(n=Np)
-            pubkey = labhe.LabHEPublicKey(mpk)
-
-            # Load private key
-            filepriv = f"Keys/privkey{DEFAULT_KEYSIZE}.txt"
-            with open(filepriv, 'r') as fin:
-                data = [line.split() for line in fin]
-                p = mpz(data[0][0])
-                q = mpz(data[1][0])
-
-            pai_priv = PaillierPrivateKey(mpk, p, q)
-
-            # Generate dummy usk and upk
-            usk = [random.randint(1, 1000) for _ in range(5)]
-            upk = util_fpv.encrypt_vector(mpk, usk)  
-            privkey = labhe.LabHEPrivateKey(pai_priv, upk)
+            priv_file = f"Keys/privkey{DEFAULT_KEYSIZE}.txt"
+            with open(priv_file, 'r') as fpriv:
+                data = [line.split() for line in fpriv]
+            p = mpz(data[0][0])
+            q = mpz(data[1][0])
+            privkey = paillier.PaillierPrivateKey(pubkey, p, q)
 
             self.pubkey = pubkey
             self.privkey = privkey
+            print("[DEBUG] Loaded keys from files")
 
         except Exception as e:
-            print("Key loading failed. Generating new keys...", e)
-            usk = [random.randint(1, 1000) for _ in range(5)]
-            self.pubkey, self.privkey = labhe.generate_LabHE_keypair(usk, n_length=DEFAULT_KEYSIZE)
-
-            # Save keys to disk
-            Np = self.pubkey.n
-            os.makedirs("Keys", exist_ok=True)
+            print(f"[DEBUG] Key files not found, generating new keys. Error: {e}")
+            keypair = paillier.generate_paillier_keypair(n_length=DEFAULT_KEYSIZE)
+            self.pubkey, self.privkey = keypair
             with open(f"Keys/pubkey{DEFAULT_KEYSIZE}.txt", 'w') as f:
-                f.write(f"{Np}")
+                f.write(str(self.pubkey.n))
             with open(f"Keys/privkey{DEFAULT_KEYSIZE}.txt", 'w') as f:
-                f.write(f"{self.privkey.msk.p}\n{self.privkey.msk.q}")
+                f.write(f"{self.privkey.p}\n{self.privkey.q}")
+            print("[DEBUG] Generated and saved new key files")
 
+    def load_initial_data(self, n, m, N):
+        x0_file = f"Data/x0{n}_{m}_{N}.txt"
+        self.x0 = np.loadtxt(x0_file)
+        w0_file = f"Data/w0{n}_{m}_{N}.txt"
+        w0 = np.loadtxt(w0_file, delimiter=',')
+        self.hu = np.concatenate([w0[2 * i * m:(2 * i + 1) * m] for i in range(N)])
+        self.lu = np.concatenate([-w0[(2 * i + 1) * m:2 * (i + 1) * m] for i in range(N)])
+        print(f"[DEBUG] Loaded initial data for n={n}, m={m}, N={N}")
 
+    def generate_random_coins(self):
+        n, Kc, Kw, nc, T = self.n, self.Kc, self.Kw, self.nc, self.T
+        bit_length = self.pubkey.n.bit_length()
+        rnd_state = gmpy2.random_state(seed)
+        coins = [gmpy2.mpz_urandomb(rnd_state, bit_length - 1) for _ in range(T * n + (T - 1) * nc * Kw + nc * Kc)]
+        coins = [gmpy2.powmod(c, self.pubkey.n, self.pubkey.nsquare) for c in coins]
+        self.coinsP = coins
+        print(f"[DEBUG] Generated {len(coins)} random coins")
 
-    def load_data(self, n, m, N):
-        fileparam = f"Data/x0{n}_{m}_{N}.txt"
-        self.x0 = np.loadtxt(fileparam)
-
-        filew0 = f"Data/w0{n}_{m}_{N}.txt"
-        w0 = np.loadtxt(filew0, delimiter=',')
-
-        hu = np.concatenate([w0[2 * i * m:(2 * i + 1) * m] for i in range(N)])
-        lu = np.concatenate([-w0[(2 * i + 1) * m:2 * (i + 1) * m] for i in range(N)])
-        self.hu = hu
-        self.lu = lu
-
-    def gen_rands(self):
-        n = self.n
-        Kc = self.Kc
-        Kw = self.Kw
-        nc = self.nc
-        T = self.T
-
-        N_len = self.pubkey.n.bit_length()
-        state = random_state(seed)
-        total_rands = T * n + (T - 1) * nc * Kw + nc * Kc
-        coinsP = [mpz_urandomb(state, N_len - 1) for _ in range(total_rands)]
-        self.coinsP = [powmod(x, self.pubkey.n, self.pubkey.nsquare) for x in coinsP]
-
-    def compare(self, t):
+    def clip_values(self, t):
         nc = self.nc
         with np.errstate(invalid='ignore'):
-            U = np.maximum(self.lu, np.minimum(self.hu, t))
-        return U
+            clipped = np.maximum(self.lu, np.minimum(self.hu, t))
+        print("[DEBUG] Clipped values with compare function")
+        return clipped
 
 
-import time
-import json
-import numbers
-try:
-    from gmpy2 import mpz as _mpz_type
-except Exception:
-    _mpz_type = None
-
-def send_encr_data(encrypted_number_list):
-    """
-    Serialize a list of LabEncryptedNumber into JSON-ready list of [c0, c1] string pairs.
-    """
+def send_encrypted_list(encrypted_list):
     time.sleep(NETWORK_DELAY)
-    out = []
-
-    for x in encrypted_number_list:
-        if not isinstance(x, labhe.LabEncryptedNumber):
-            raise TypeError(f"Expected LabEncryptedNumber, got {type(x)}")
-
-        c0, c1 = x.ciphertext  # LabHE ciphertext is a tuple
-        out.append([str(c0), str(c1)])
-
-    return json.dumps(out)
+    enc_str_list = [str(x.ciphertext()) for x in encrypted_list]
+    print(f"[DEBUG] Sending encrypted data of length {len(enc_str_list)}")
+    return json.dumps(enc_str_list)
 
 
-def send_plain_data(data):
-	time.sleep(NETWORK_DELAY)
-	return json.dumps([str(x) for x in data])
-
-def recv_size(the_socket):
-	#data length packed into 4 bytes
-	total_len=0;total_data=[];size=sys.maxsize
-	size_data=sock_data=bytes([]);recv_size=4096
-	while total_len<size:
-		sock_data=the_socket.recv(recv_size)
-		if not total_data:
-			if len(sock_data)>4:
-				size=struct.unpack('>i', sock_data[:4])[0]
-				recv_size=size
-				if recv_size>4096:recv_size=4096
-				total_data.append(sock_data[4:])
-			else:
-				size_data+=sock_data
-
-		else:
-			total_data.append(sock_data)
-		total_len=sum([len(i) for i in total_data ])
-	return b''.join(total_data)
+def send_plain_list(data):
+    time.sleep(NETWORK_DELAY)
+    print(f"[DEBUG] Sending plain data of length {len(data)}")
+    return json.dumps([str(x) for x in data])
 
 
-import json
-import ast
-try:
-    from gmpy2 import mpz as _mpz_type
-except Exception:
-    _mpz_type = None
-
-
-def get_enc_data(received_json, pubkey):
-    """
-    Parse JSON from send_encr_data and return list of LabEncryptedNumber.
-    """
-    if isinstance(received_json, str):
-        data = json.loads(received_json)
-    else:
-        data = received_json
-
-    result = []
-    for item in data:
-        if isinstance(item, (list, tuple)) and len(item) == 2:
-            c0 = int(item[0])
-            c1 = int(item[1])
-            result.append(labhe.LabEncryptedNumber(pubkey, (c0, c1)))
+def receive_data_with_size(sock):
+    total_len = 0
+    data_chunks = []
+    size = sys.maxsize
+    size_data = sock_data = bytes()
+    recv_size = 4096
+    while total_len < size:
+        sock_data = sock.recv(recv_size)
+        if not data_chunks:
+            if len(sock_data) > 4:
+                size = struct.unpack('>i', sock_data[:4])[0]
+                recv_size = size if size <= 4096 else 4096
+                data_chunks.append(sock_data[4:])
+            else:
+                size_data += sock_data
         else:
-            raise ValueError("Expected list of [c0, c1] for each ciphertext.")
-    return result
+            data_chunks.append(sock_data)
+        total_len = sum(len(chunk) for chunk in data_chunks)
+    print(f"[DEBUG] Received data of size {total_len}")
+    return b''.join(data_chunks)
 
-def get_plain_data(data):
-    result = []
-    for x in data:
-        try:
-            result.append(int(x))
-        except (ValueError, TypeError):
-            print(f"Warning: could not convert {x} to int")
-    return result
+
+def parse_encrypted_data(data_list, pubkey):
+    enc_data = [paillier.EncryptedNumber(pubkey, int(x)) for x in data_list]
+    print(f"[DEBUG] Parsed {len(enc_data)} encrypted numbers")
+    return enc_data
+
+
+def parse_plain_data(data_list):
+    plain = [int(x) for x in data_list]
+    print(f"[DEBUG] Parsed plain data: {plain}")
+    return plain
+
+
 def main():
     lf = DEFAULT_PRECISION
     client = Client()
-    pubkey = client.pubkey  # LabHE public key
-    print("DEBUG: Public key type =", type(pubkey))
-
+    pubkey = client.pubkey
     privkey = client.privkey
 
-    # TCP/IP socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     print('Client: Socket successfully created')
     port = 10000
-    localhost = [l for l in ([ip for ip in socket.gethostbyname_ex(socket.gethostname())[2]
-                              if not ip.startswith("127.")][:1],
-                              [[(s.connect(('8.8.8.8', 53)),
-                                 s.getsockname()[0], s.close())
-                                for s in [socket.socket(socket.AF_INET, socket.SOCK_DGRAM)]][0][1]]) if l][0][0]
-    server_address = (localhost, port)
-    print('Client: Starting up on {} port {}'.format(*server_address))
-    sock.bind(server_address)
 
-    # Listen for incoming connections
+    localhost = [addr for addr in (
+        [ip for ip in socket.gethostbyname_ex(socket.gethostname())[2] if not ip.startswith("127.")][:1],
+        [[
+            (s.connect(('8.8.8.8', 53)), s.getsockname()[0], s.close())
+            for s in [socket.socket(socket.AF_INET, socket.SOCK_DGRAM)]
+        ][0][1]]
+    ) if addr][0][0]
+
+    server_addr = (localhost, port)
+    print(f'Client: Starting up on {server_addr[0]} port {server_addr[1]}')
+    sock.bind(server_addr)
+
     sock.listen(1)
     print('Client: Socket is listening')
     connection, client_address = sock.accept()
 
     try:
         print('Client: Connection from', client_address)
-        data = json.loads(recv_size(connection))
-        if data:
-            # Receive n,m,N,K,T
-            n, m, N, Kc, Kw, T = get_plain_data(data)
-            client.n = n
-            client.m = m
-            client.N = N
-            client.Kc = Kc
-            client.Kw = Kw
-            client.T = T
-            nc = m * N
-            client.nc = nc
+        raw_data = json.loads(receive_data_with_size(connection))
+        if raw_data:
+            n, m, N, Kc, Kw, T = parse_plain_data(raw_data)
+            client.n, client.m, client.N = n, m, N
+            client.Kc, client.Kw, client.T = Kc, Kw, T
+            client.nc = m * N
 
-            client.gen_rands()
-            client.load_data(n, m, N)
+            client.generate_random_coins()
+            client.load_initial_data(n, m, N)
 
             fileA = f"Data/A{n}_{m}_{N}.txt"
-            A = np.loadtxt(fileA, delimiter=',')
             fileB = f"Data/B{n}_{m}_{N}.txt"
+            A = np.loadtxt(fileA, delimiter=',')
             B = np.loadtxt(fileB, delimiter=',')
 
-            x = [[0] * n] * (T + 1)
-            u = [[0] * m] * T
+            x = [[0]*n] * (T + 1)
+            u = [[0]*m] * T
             x[0] = client.x0
 
-            start = time.time()
-            sec = [0] * T
+            start_time = time.time()
+            iteration_times = [0] * T
             K = Kc
-            time_client = [0] * K
-            time_cloud = [0] * K
+            time_client_iter = [0] * K
+            time_cloud_iter = [0] * K
 
-            for i in range(0, T):
-                # Encrypt x[i] with fixed-point encoding (LabHE)
-                fixed_x = fp_vector(x[i], lf)
-                secret = pubkey.offline_gen_secret(label=..., usk=...)  # TODO: provide real label and usk
-                enc_x0 = [
-                    pubkey.encrypt_with_label(int(val), secret, r_value=r_value)
-                    for val, r_value in zip(fixed_x, client.coinsP[-n:])
-                ]
+            for i in range(T):
+                enc_x = encrypt_vals(pubkey, fixed_point_vector(x[i]), client.coinsP[-n:])
                 client.coinsP = client.coinsP[:-n]
 
-                # Send [[x0]]
-                data = send_encr_data(enc_x0)
-                connection.sendall(struct.pack('>i', len(data)) + data.encode('utf-8'))
-                time_x0 = time.time() - start
+                data_to_send = send_encrypted_list(enc_x)
+                connection.sendall(struct.pack('>i', len(data_to_send)) + data_to_send.encode('utf-8'))
+                print(f"[DEBUG] Sent encrypted state vector x[{i}]")
 
+                time_x = time.time() - start_time
                 start_cloud = time.time()
-                for k in range(0, K):
-                    # Receive [[t_k]]
-                    data = json.loads(recv_size(connection))
-                    time_cloud[k] = time.time() - start_cloud
-                    start_tk = time.time()
 
-                    enc_t = get_enc_data(data, pubkey)
-                    t = retrieve_fp_vector(decrypt_vector(privkey, enc_t), 3 * lf)
+                for k in range(K):
+                    incoming = json.loads(receive_data_with_size(connection))
+                    time_cloud_iter[k] = time.time() - start_cloud
+                    start_client = time.time()
 
-                    # Compare and encrypt U (LabHE)
-                    U = client.compare(t)
-                    fixed_U = fp_vector(U, lf)
-                    secret = pubkey.offline_gen_secret(label=..., usk=...)  # TODO: provide real label and usk
-                    enc_U = [
-                        pubkey.encrypt_with_label(int(val), secret, r_value=r_value)
-                        for val, r_value in zip(fixed_U, client.coinsP[-nc:])
-                    ]
-                    client.coinsP = client.coinsP[:-nc]
+                    enc_t = parse_encrypted_data(incoming, pubkey)
+                    t = retrieve_fixed_point_vector(decrypt_vals(privkey, enc_t), 3 * lf)
 
-                    # Send [[U_{k+1}]]
-                    data = send_encr_data(enc_U)
-                    connection.sendall(struct.pack('>i', len(data)) + data.encode('utf-8'))
-                    time_client[k] = time.time() - start_tk
+                    U = client.clip_values(t)
+                    enc_U = encrypt_vals(pubkey, fixed_point_vector(U), client.coinsP[-client.nc:])
+                    client.coinsP = client.coinsP[:-client.nc]
+
+                    data_to_send = send_encrypted_list(enc_U)
+                    connection.sendall(struct.pack('>i', len(data_to_send)) + data_to_send.encode('utf-8'))
+                    time_client_iter[k] = time.time() - start_client
                     start_cloud = time.time()
 
                 K = Kw
-                u[i] = Q_vector(U[:m])
-                print("Last input: ", ["%.8f" % val for val in u[i]])
+                u[i] = quant_vector(U[:m])
+                print(f"Last input at step {i}: ", ["%.8f" % val for val in u[i]])
                 x[i + 1] = np.dot(A, x[i]) + np.dot(B, u[i])
-                print("Next state: ", ["%.8f" % val for val in x[i + 1]])
-                sec[i] = time.time() - start
-                start = time.time()
+                print(f"Next state at step {i + 1}: ", ["%.8f" % val for val in x[i + 1]])
+                iteration_times[i] = time.time() - start_time
+                start_time = time.time()
 
-            print(sec)
-            with open(os.path.abspath(f"{DEFAULT_KEYSIZE}_{lf}_results_CS.txt"), 'a+') as f:
+            print("[DEBUG] Iteration times:", iteration_times)
+            result_file = os.path.abspath(f"{DEFAULT_KEYSIZE}_{lf}_results_CS.txt")
+            with open(result_file, 'a+') as f:
                 f.write(f"{n}, {m}, {N}, {Kc}, {Kw}, {T}: ")
-                for item in sec:
-                    f.write(f"total time {item:.2f} ")
+                for t in iteration_times:
+                    f.write(f"total time {t:.2f} ")
                 f.write("\n")
-                f.write(f"avg. time FGM iteration for client: {np.mean(time_client):.3f}\n")
-                f.write(f"avg. time FGM iteration for cloud: {np.mean(time_cloud):.3f}\n")
+                f.write(f"avg. time FGM iteration for client: {np.mean(time_client_iter):.3f}\n")
+                f.write(f"avg. time FGM iteration for cloud: {np.mean(time_cloud_iter):.3f}\n")
 
     finally:
         print('Client: Closing connection')
