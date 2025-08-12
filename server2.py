@@ -19,7 +19,7 @@ from labhe import LabEncryptedNumber
 import random
 
 
-DEFAULT_KEYSIZE = 1024						
+DEFAULT_KEYSIZE = 512						
 DEFAULT_MSGSIZE = 64 						
 DEFAULT_SECURITYSIZE = 100					
 DEFAULT_PRECISION = int(DEFAULT_MSGSIZE/2)	
@@ -139,8 +139,8 @@ class Server2:
             msk = PaillierPrivateKey(mpk, p, q)
 
             # Dummy upk used just to satisfy constructor — not used for decryption
-            c0 = pubkey.Pai_key.encrypt(0) 
-            dummy_ciphertext = (c0, c0)     
+            c0 = pubkey.Pai_key.encrypt(0)
+            dummy_ciphertext = (c0, c0)
             dummy_upk = [LabEncryptedNumber(pubkey, dummy_ciphertext)]
 
             privkey = labhe.LabHEPrivateKey(msk, dummy_upk)
@@ -151,13 +151,16 @@ class Server2:
         except Exception as e:
             print("Key loading failed. Generating new keys...", e)
 
-
             # Key generation fallback
             usk = [random.randint(1, 1000) for _ in range(1)]  # single usk
-            self.pubkey, self.privkey = labhe.generate_LabHE_keypair(usk, n_length=DEFAULT_KEYSIZE)
+            self.pubkey, self.privkey = labhe.generate_LabHE_keypair(
+                usk, n_length=DEFAULT_KEYSIZE
+            )
+
+            # ensure Np is defined for subsequent code
+            Np = self.pubkey.n
 
             # Save new keys
-            Np = self.pubkey.n
             os.makedirs("Keys", exist_ok=True)
             with open(f"Keys/pubkey{DEFAULT_KEYSIZE}.txt", 'w') as f:
                 f.write(f"{Np}")
@@ -248,18 +251,60 @@ def keys(DGK_pubkey):
 	serialized_pubkeys = json.dumps(pubkeys)
 	return serialized_pubkeys
 
-def get_enc_data(received_list, pubkey):
+import json
+import ast
+try:
+    from gmpy2 import mpz as _mpz_type
+except Exception:
+    _mpz_type = None
+
+def get_enc_data(received_json, pubkey):
+    """
+    Parse JSON produced by send_encr_data and return list of LabEncryptedNumber or Paillier encrypted wrappers.
+    `received_json` can already be a Python list or a JSON string.
+    """
+    # If a JSON string, parse it
+    if isinstance(received_json, str):
+        data = json.loads(received_json)
+    else:
+        data = received_json
+
     result = []
-    for x in received_list:
-        if isinstance(x, (list, tuple)) and len(x) == 2:
-            # LabHE ciphertext: (c0, c1)
-            c0, c1 = int(x[0]), int(x[1])
-            result.append(labhe.LabEncryptedNumber(pubkey, (c0, c1)))
-        elif isinstance(x, int):
-            # Paillier-style ciphertext, treated as rerandomized (only c0)
-            result.append(labhe.LabEncryptedNumber(pubkey, (int(x),)))  
+    for item in data:
+        # Expect item == [c0_str, c1_str] per send_encr_data
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            s0, s1 = item[0], item[1]
+            # try convert s0/s1 to int (they were emitted as strings)
+            try:
+                c0 = int(s0)
+            except Exception:
+                # maybe a long repr: try ast.literal_eval
+                try:
+                    c0 = ast.literal_eval(s0)
+                except Exception:
+                    raise ValueError(f"Cannot parse ciphertext element: {s0}")
+            try:
+                c1 = int(s1)
+            except Exception:
+                try:
+                    c1 = ast.literal_eval(s1)
+                except Exception:
+                    # if the sender stringified a Paillier EncryptedNumber or LabEncryptedNumber object, you'll need a different
+                    # protocol — here we'll just raise a helpful error.
+                    raise ValueError(f"Cannot parse ciphertext element: {s1}")
+
+            # Now create LabEncryptedNumber or Paillier EncryptedNumber depending on your expected format.
+            # If using LabHE two-component ciphertexts, convert to LabEncryptedNumber:
+            try:
+                import labhe
+                # If c1 == 0 this might be a single-component encryption; still wrap as LabEncryptedNumber if you expect LabHE.
+                result.append(labhe.LabEncryptedNumber(pubkey, (c0, c1)))
+            except Exception:
+                # fallback: return raw ints
+                result.append((c0, c1))
         else:
-            raise TypeError(f"Invalid ciphertext format: expected (c0, c1) or int, got {x}")
+            raise ValueError("Received unexpected encryption format; expected list of [c0, c1].")
+
     return result
 
 
@@ -294,11 +339,53 @@ def recv_size(the_socket):
 		total_len=sum([len(i) for i in total_data ])
 	return b''.join(total_data)
 
+import time
+import json
+import numbers
+try:
+    from gmpy2 import mpz as _mpz_type
+except Exception:
+    _mpz_type = None
+
 def send_encr_data(encrypted_number_list):
-	time.sleep(NETWORK_DELAY)
-	encrypted = {}
-	encrypted = [str(x.ciphertext()) for x in encrypted_number_list]
-	return json.dumps(encrypted)
+    """
+    Serialize a list of encrypted numbers into JSON-ready list of [c0, c1] string pairs.
+    Works whether each encrypted number exposes .ciphertext as a method or property,
+    and whether the ciphertext is a single integer or a (c0, c1) pair.
+    """
+    time.sleep(NETWORK_DELAY)
+    out = []
+
+    for x in encrypted_number_list:
+        # call ciphertext if it's a method, otherwise access property
+        ct = x.ciphertext() if callable(getattr(x, "ciphertext", None)) else getattr(x, "ciphertext", None)
+
+        # If ct is an mpz or int-like single value, treat as (c0, 0)
+        if isinstance(ct, (int,)) or (_mpz_type is not None and isinstance(ct, _mpz_type)) or isinstance(ct, numbers.Integral):
+            c0 = int(ct)
+            c1 = 0
+        else:
+            # It might be a tuple/list (c0, c1)
+            # Some implementations return (EncryptedNumber, EncryptedNumber) or (int, EncryptedNumber) etc.
+            if isinstance(ct, (tuple, list)) and len(ct) == 2:
+                # convert both parts to ints if possible (EncryptedNumber -> its integer ciphertext is already handled on receiver)
+                try:
+                    # if elements are mpz or ints
+                    c0 = int(ct[0])
+                    c1 = int(ct[1])
+                except Exception:
+                    # fallback: convert to string representation so receiver can parse with ast.literal_eval or handle it
+                    c0 = str(ct[0])
+                    c1 = str(ct[1])
+            else:
+                # Last-resort: stringify whatever we got
+                c0 = str(ct)
+                c1 = 0
+
+        out.append([str(c0), str(c1)])
+
+    return json.dumps(out)
+
 
 def send_DGK_data(encrypted_number_list):
 	time.sleep(NETWORK_DELAY)

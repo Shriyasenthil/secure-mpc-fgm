@@ -5,11 +5,13 @@ import random
 import hashlib
 import math
 import sys
+
 import numpy
 try:
     from collections.abc import Mapping
 except ImportError:
     Mapping = dict
+
 
 from util import invert, powmod, getprimeover, isqrt
 from gmpy2 import mpz
@@ -20,7 +22,7 @@ try:
 except ImportError:
     HAVE_GMP = False
 
-DEFAULT_KEYSIZE = 1024
+DEFAULT_KEYSIZE = 512
 
 
 def generate_paillier_keypair(private_keyring=None, n_length=DEFAULT_KEYSIZE):
@@ -104,7 +106,7 @@ class PaillierPublicKey(object):
         return self.encrypt_encoded(encoding, r_value)
 
 class PaillierPrivateKey(object):
- 
+
     def __init__(self, public_key, p, q):
         if not p * q == public_key.n:
             raise ValueError('given public key does not match the given p and q.')
@@ -133,19 +135,41 @@ class PaillierPrivateKey(object):
         if not p * q == public_key.n:
             raise ValueError('given public key and totient do not match.')
         return PaillierPrivateKey(public_key, p, q)
-        
+
     def __repr__(self):
         pub_repr = repr(self.public_key)
         return "<PaillierPrivateKey for {}>".format(pub_repr)
-
+    
     def decrypt(self, encrypted_number):
+        import traceback
+        import pdb
+        print(f"\n[DEBUG decrypt] Got type: {type(encrypted_number)}")
+
+        # Patch to unwrap LabEncryptedNumber without circular import
+        try:
+            import labhe
+        except ImportError:
+            labhe = None
+
+        if labhe is not None and isinstance(encrypted_number, labhe.LabEncryptedNumber):
+            ct = encrypted_number.ciphertext
+            if isinstance(ct, (tuple, list)) and len(ct) == 2 and isinstance(ct[0], EncryptedNumber):
+                encrypted_number = ct[0]
+            elif isinstance(ct, EncryptedNumber):
+                encrypted_number = ct
+            else:
+                raise TypeError(
+                    f'Could not unwrap LabEncryptedNumber into EncryptedNumber, got ciphertext type {type(ct)}'
+                )
+
         if not isinstance(encrypted_number, EncryptedNumber):
-            raise TypeError('Expected encrypted_number to be an EncryptedNumber'
-                            ' not: %s' % type(encrypted_number))
+            raise TypeError(
+                'Expected encrypted_number to be an EncryptedNumber'
+                ' not: %s' % type(encrypted_number)
+            )
 
         if self.public_key != encrypted_number.public_key:
-            raise ValueError('encrypted_number was encrypted against a '
-                             'different key!')
+            raise ValueError('encrypted_number was encrypted against a different key!')
 
         return self.raw_decrypt(encrypted_number.ciphertext(be_secure=False))
 
@@ -162,7 +186,6 @@ class PaillierPrivateKey(object):
         else:
             return value - self.n
 
-    
     def h_function(self, x, xsquare):
        
         return invert(self.l_function(powmod(self.public_key.g, x - 1, xsquare),x), x)
@@ -226,13 +249,26 @@ class EncryptedNumber(object):
             raise TypeError('ciphertext should be an integer')
         if not isinstance(self.public_key, PaillierPublicKey):
             raise TypeError('public_key should be a PaillierPublicKey')
+        
+    @property
+
+    def ciphertext(self):
+        if not self.__is_obfuscated:
+            self.obfuscate()
+        return self.__ciphertext
+
+        
+    
 
     def __add__(self, other):
-        """Add an int, float, `EncryptedNumber` or `EncodedNumber`."""
-        if isinstance(other, EncryptedNumber):
+        import labhe
+        from labhe import LabEncryptedNumber
+        if isinstance(other, EncryptedNumber) or isinstance(other, LabEncryptedNumber):
             return self._add_encrypted(other)
         else:
             return self._add_scalar(other)
+
+    
 
     def __radd__(self, other):
         
@@ -275,8 +311,7 @@ class EncryptedNumber(object):
         self.__is_obfuscated = True
 
     def _add_scalar(self, scalar):
-        
-
+    
         a, b = self, scalar
 
         # Don't bother to salt/obfuscate in a basic operation, do it
@@ -287,14 +322,30 @@ class EncryptedNumber(object):
         return EncryptedNumber(a.public_key, sum_ciphertext)
 
     def _add_encrypted(self, other):
+        import labhe
+        from labhe import LabEncryptedNumber
+        if hasattr(self, 'public_key') and hasattr(other, 'public_key'):
+            if self.public_key != other.public_key:
+                raise ValueError("Mismatched public keys for addition")
+            a, b = self, other
+            sum_ciphertext = a._raw_add(a.ciphertext(False), b.ciphertext(False))
+            return EncryptedNumber(a.public_key, sum_ciphertext)
+        
+        # Handle LabEncryptedNumber
+        elif hasattr(self, 'mpk') and hasattr(other, 'mpk'):
+            if self.mpk != other.mpk:
+                raise ValueError("Mismatched public keys for addition")
+            n_sq = self.mpk.n * self.mpk.n
+            # ciphertexts are integers in LabEncryptedNumber
+            sum_ciphertext = (self.ciphertext * other.ciphertext) % n_sq
+            return LabEncryptedNumber(self.mpk, sum_ciphertext)
+        elif (hasattr(self, 'public_key') and hasattr(other, 'mpk')) or (hasattr(self, 'mpk') and hasattr(other, 'public_key')):
+            raise TypeError(f"Cannot add encrypted numbers of different types: {type(self)} + {type(other)}")
+        
+        else:
+            raise TypeError(f"Unsupported encrypted number types for addition: {type(self)} + {type(other)}")
+
       
-        if self.public_key != other.public_key:
-            raise ValueError
-
-        a, b = self, other
-
-        sum_ciphertext = a._raw_add(a.ciphertext(False), b.ciphertext(False))
-        return EncryptedNumber(a.public_key, sum_ciphertext)
 
     def _raw_add(self, e_a, e_b):
         

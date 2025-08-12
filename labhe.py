@@ -1,12 +1,14 @@
 
+import numbers
 
 import random
 import hashlib
+import paillier
 import math
 import sys
 import numpy
 from gmpy2 import mpz
-import paillier
+
 import util_fpv
 
 try:
@@ -15,9 +17,10 @@ try:
 except ImportError:
     HAVE_GMP = False
 
-DEFAULT_KEYSIZE = 1024
+DEFAULT_KEYSIZE = 512
 
 def generate_LabHE_keypair(usk, n_length=DEFAULT_KEYSIZE):
+
     mpk, msk = paillier.generate_paillier_keypair(None, n_length)
     lpk = LabHEPublicKey(mpk)
 
@@ -36,24 +39,30 @@ def Init():
     pubkey, privkey = generate_paillier_keypair()
     return privkey, pubkey
 
-class LabHEPublicKey(object):
+class LabHEPublicKey(paillier.PaillierPublicKey):
     
-    def __init__(self, mpk):
-        self.Pai_key = mpk
-        self.n = mpk.n
-        self.max_int = mpk.n // 3 - 1
-        self.nsquare = mpk.n ** 2 
-    @property
-    def n_sq(self):
-        return self.Pai_key.nsquare 
-    
-    def offline_gen_secret(self, label, usk):
-        
-        self.usk = usk  
-        hash = hashlib.sha3_224()
-        hash.update((bin(usk) + str(label)).encode('utf-8'))
+    from paillier import PaillierPublicKey 
 
-        secret = int(hash.hexdigest(),16)
+    def __init__(self, mpk):
+        # DEBUG print
+        print(f"DEBUG LabHEPublicKey: type(mpk.n)={type(mpk.n)}, mpk.n={mpk.n}")
+        assert not isinstance(mpk.n, str), f"mpk.n is a string! Value: {mpk.n}"
+
+        n = mpz(mpk.n)
+
+        # Initialize the parent PaillierPublicKey with n
+        super().__init__(n)
+
+        # Keep the original LabHE-specific attributes
+        self.Pai_key = mpk
+        self.max_int = n // 3 - 1
+        self.nsquare = n ** 2
+
+    def offline_gen_secret(self, label, usk):
+        self.usk = usk
+        hash_obj = hashlib.sha3_224()
+        hash_obj.update((bin(usk) + str(label)).encode('utf-8'))
+        secret = int(hash_obj.hexdigest(), 16)
         return secret
 
     def offline_encrypt(self, secret):
@@ -66,12 +75,12 @@ class LabHEPublicKey(object):
         import numpy
         from gmpy2 import mpz
 
-        if not isinstance(secret, int) and not isinstance(secret, type(mpz(1))) and not isinstance(secret, numpy.integer):
-            raise TypeError('Expected int type secret but got: %s' % type(secret))
-        if not isinstance(plaintext, int) and not isinstance(plaintext, type(mpz(1))) and not isinstance(plaintext, numpy.integer):
-            raise TypeError('Expected int type plaintext but got: %s' % type(plaintext))
+        if not isinstance(secret, (int, type(mpz(1)), numpy.integer)):
+            raise TypeError(f'Expected int type secret but got: {type(secret)}')
+        if not isinstance(plaintext, (int, type(mpz(1)), numpy.integer)):
+            raise TypeError(f'Expected int type plaintext but got: {type(plaintext)}')
         if enc_secret is not None and not isinstance(enc_secret, paillier.EncryptedNumber):
-            raise TypeError('Expected encrypted secret to be type Paillier.EncryptedNumber or None but got: %s' % type(enc_secret))
+            raise TypeError(f'Expected encrypted secret to be type Paillier.EncryptedNumber or None but got: {type(enc_secret)}')
 
         if enc_secret is None:
             ciphertext = plaintext - secret, self.Pai_key.encrypt(secret, r_value)
@@ -79,7 +88,6 @@ class LabHEPublicKey(object):
             ciphertext = plaintext - secret, enc_secret
 
         return LabEncryptedNumber(self, ciphertext)
-
 
 
 class LabHEPrivateKey(object):
@@ -164,22 +172,53 @@ class LabHEPrivateKey(object):
 
     def raw_offline_decrypt(self, encr_secret):
         if isinstance(encr_secret, int):
-            encr_secret = paillier.EncryptedNumber(self.msk.public_key, encr_secret, 0)
+            encr_secret = paillier.EncryptedNumber(self.msk.public_key, encr_secret)
 
         if not isinstance(encr_secret, paillier.EncryptedNumber):
             raise TypeError(f"Expected EncryptedNumber for raw_offline_decrypt, got {type(encr_secret)}")
 
         secret = self.msk.decrypt(encr_secret)
         return secret
+    
+
+import traceback
+
 
 class LabEncryptedNumber(object):
+    @property
+    def mpk(self):
+        return self._mpk
+
+    @mpk.setter
+    def mpk(self, value):
+        
+        
+        print(f"SETTER: Assigning mpk with type {type(value)}")
+        assert not isinstance(value, type), f"mpk is a class/type, not an instance! Got: {value}"
+        if not isinstance(value, LabHEPublicKey):
+            raise TypeError(f"mpk should be a LabHEPublicKey, got {type(value)}")
+        self._mpk = value
+
+
     def __init__(self, mpk, ciphertext):
+        assert not isinstance(mpk, type), f"mpk is a class/type, not an instance! Got: {mpk}"
+        if not isinstance(mpk, LabHEPublicKey):
+            raise TypeError(f"mpk should be a LabHEPublicKey, got {type(mpk)}")
+        print(f"DEBUG LabEncryptedNumber: type(mpk)={type(mpk)}, type(mpk.n)={type(mpk.n)}, mpk.n={mpk.n}")
+        
+        if not isinstance(mpk.n, numbers.Integral):
+            raise TypeError(f"mpk.n must be an integer type, got {type(mpk.n)}")
+
+        mpk.n = int(mpk.n)
         self.mpk = mpk
-        self.ciphertext = ciphertext
-        if isinstance(self.ciphertext, LabEncryptedNumber) or isinstance(self.ciphertext, paillier.EncryptedNumber):
+
+        if isinstance(ciphertext, LabEncryptedNumber) or isinstance(ciphertext, paillier.EncryptedNumber):
             raise TypeError('Ciphertext should be an integer')
-        if not isinstance(self.mpk, LabHEPublicKey):
-            raise TypeError('mpk should be a LabHEPublicKey')
+        self.ciphertext = ciphertext
+        
+
+
+
 
     def __add__(self, other):
         #Add a LabEncryptedNumber, Paillier EncryptedNumber, or scalar.
@@ -192,16 +231,25 @@ class LabEncryptedNumber(object):
         return self.__add__(other)
 
     def __mul__(self, other):
+        assert not isinstance(self.mpk, type), f"self.mpk is a class/type, not an instance! Got: {self.mpk}"
+        print(f"DEBUG __mul__: type(self)={type(self)}, type(self.mpk)={type(self.mpk)}, type(self.mpk.n)={type(self.mpk.n)}, self.mpk.n={self.mpk.n}")
         return self._mul_scalar(other)
 
+
     def _mul_scalar(self, plaintext):
+        assert not isinstance(self.mpk, type), f"self.mpk is a class/type, not an instance! Got: {self.mpk}"
+        print(f"DEBUG _mul_scalar: type(self)={type(self)}, type(self.mpk)={type(self.mpk)}, type(self.mpk.n)={type(self.mpk.n)}, self.mpk.n={self.mpk.n}")
+        print(f"DEBUG: plaintext={plaintext}, n={self.mpk.n}")
  
         if not isinstance(plaintext, int) and not isinstance(plaintext, type(mpz(1))) and not isinstance(plaintext, numpy.int64):
             raise TypeError('Expected ciphertext to be int, not %s' %
                 type(plaintext))
-
-        if plaintext < 0 or plaintext >= self.mpk.n:
+        if plaintext < 0:
+            plaintext = plaintext % self.mpk.n
+        if not (0 <= plaintext < self.mpk.n):
             raise ValueError('Scalar out of bounds: %i' % plaintext)
+
+    
 
         a, b = self.ciphertext, plaintext
 
@@ -210,7 +258,6 @@ class LabEncryptedNumber(object):
         else:
             prod_ciphertext = a*b
         return LabEncryptedNumber(self.mpk, prod_ciphertext)
-
 
 
     def _encrypt_zero(self):
@@ -231,6 +278,9 @@ class LabEncryptedNumber(object):
         return LabEncryptedNumber(self.mpk, (neg_c0, neg_c1_encrypted))
 
     def __rmul__(self, other):
+        assert not isinstance(self.mpk, type), f"self.mpk is a class/type, not an instance! Got: {self.mpk}"
+        print(f"DEBUG __rmul__: type(self)={type(self)}, type(self.mpk)={type(self.mpk)}, type(self.mpk.n)={type(self.mpk.n)}, self.mpk.n={self.mpk.n}")
+
         return self.__mul__(other)
 
     def __sub__(self, other):

@@ -3,7 +3,7 @@
 import socket
 import sys,struct
 import json
-from gmpy2 import mpz
+from gmpy2 import mpz, random_state, mpz_urandomb, powmod
 import paillier
 from paillier import PaillierPublicKey,PaillierPrivateKey
 import numpy as np
@@ -19,7 +19,7 @@ try:
 except ImportError:
 	HAVE_GMP = False
 
-DEFAULT_KEYSIZE = 1024					        
+DEFAULT_KEYSIZE = 512					        
 DEFAULT_MSGSIZE = 64 					    
 DEFAULT_SECURITYSIZE = 100				        
 DEFAULT_PRECISION = int(DEFAULT_MSGSIZE/2)     
@@ -37,14 +37,9 @@ def decrypt_vector(privkey, x):
     for i in x:
         if isinstance(i, labhe.LabEncryptedNumber):
             result.append(privkey.decrypt(i))
-        elif isinstance(i, paillier.EncryptedNumber):
-            result.append(privkey.msk.decrypt(i))
         else:
             raise TypeError(f"Unknown encryption type: {type(i)}")
     return np.array(result)
-
-    
-
 
 
 def Q_s(scalar,prec=DEFAULT_PRECISION):
@@ -77,16 +72,9 @@ def retrieve_fp(scalar,prec=DEFAULT_PRECISION):
 def retrieve_fp_vector(vec,prec=DEFAULT_PRECISION):
 	return [retrieve_fp(x,prec) for x in vec]
 
-import os
-import random
-import numpy as np
-from gmpy2 import mpz, random_state, mpz_urandomb, powmod
-from paillier import PaillierPublicKey
-import labhe
 
-DEFAULT_KEYSIZE = 512
-DEFAULT_MSGSIZE = 10
-seed = 42 
+
+
 
 
 
@@ -167,11 +155,30 @@ class Client:
         return U
 
 
+import time
+import json
+import numbers
+try:
+    from gmpy2 import mpz as _mpz_type
+except Exception:
+    _mpz_type = None
+
 def send_encr_data(encrypted_number_list):
-	time.sleep(NETWORK_DELAY)
-	enc_with_one_pub_key = {}
-	enc_with_one_pub_key = [str(x.ciphertext()) for x in encrypted_number_list]
-	return json.dumps(enc_with_one_pub_key)
+    """
+    Serialize a list of LabEncryptedNumber into JSON-ready list of [c0, c1] string pairs.
+    """
+    time.sleep(NETWORK_DELAY)
+    out = []
+
+    for x in encrypted_number_list:
+        if not isinstance(x, labhe.LabEncryptedNumber):
+            raise TypeError(f"Expected LabEncryptedNumber, got {type(x)}")
+
+        c0, c1 = x.ciphertext  # LabHE ciphertext is a tuple
+        out.append([str(c0), str(c1)])
+
+    return json.dumps(out)
+
 
 def send_plain_data(data):
 	time.sleep(NETWORK_DELAY)
@@ -196,22 +203,34 @@ def recv_size(the_socket):
 			total_data.append(sock_data)
 		total_len=sum([len(i) for i in total_data ])
 	return b''.join(total_data)
-def get_enc_data(received_list, pubkey):
+
+
+import json
+import ast
+try:
+    from gmpy2 import mpz as _mpz_type
+except Exception:
+    _mpz_type = None
+
+
+def get_enc_data(received_json, pubkey):
+    """
+    Parse JSON from send_encr_data and return list of LabEncryptedNumber.
+    """
+    if isinstance(received_json, str):
+        data = json.loads(received_json)
+    else:
+        data = received_json
+
     result = []
-    for x in received_list:
-        if isinstance(x, (list, tuple)) and len(x) == 2:
-
-            c0, c1 = int(x[0]), int(x[1])
+    for item in data:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            c0 = int(item[0])
+            c1 = int(item[1])
             result.append(labhe.LabEncryptedNumber(pubkey, (c0, c1)))
-        elif isinstance(x, (int, str)):
-          
-            c0 = int(x)
-            result.append(labhe.LabEncryptedNumber(pubkey, (c0, 0)))
         else:
-            raise TypeError(f"Unsupported encrypted input: {x}")
+            raise ValueError("Expected list of [c0, c1] for each ciphertext.")
     return result
-
-
 
 def get_plain_data(data):
     result = []
@@ -221,103 +240,127 @@ def get_plain_data(data):
         except (ValueError, TypeError):
             print(f"Warning: could not convert {x} to int")
     return result
-
-
-
 def main():
+    lf = DEFAULT_PRECISION
+    client = Client()
+    pubkey = client.pubkey  # LabHE public key
+    print("DEBUG: Public key type =", type(pubkey))
 
-	
-	lf = DEFAULT_PRECISION
-	client = Client()
-	pubkey = client.pubkey
-	privkey = client.privkey
+    privkey = client.privkey
 
-	# TCP/IP socket
-	sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-	print('Client: Socket successfully created')
-	port = 10000
-	# Bind the socket to the port
-	localhost = [l for l in ([ip for ip in socket.gethostbyname_ex(socket.gethostname())[2] if not ip.startswith("127.")][:1], [[(s.connect(('8.8.8.8', 53)), s.getsockname()[0], s.close()) for s in [socket.socket(socket.AF_INET, socket.SOCK_DGRAM)]][0][1]]) if l][0][0]
-	server_address = (localhost, port)
-	print('Client: Starting up on {} port {}'.format(*server_address))
-	sock.bind(server_address)
+    # TCP/IP socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    print('Client: Socket successfully created')
+    port = 10000
+    localhost = [l for l in ([ip for ip in socket.gethostbyname_ex(socket.gethostname())[2]
+                              if not ip.startswith("127.")][:1],
+                              [[(s.connect(('8.8.8.8', 53)),
+                                 s.getsockname()[0], s.close())
+                                for s in [socket.socket(socket.AF_INET, socket.SOCK_DGRAM)]][0][1]]) if l][0][0]
+    server_address = (localhost, port)
+    print('Client: Starting up on {} port {}'.format(*server_address))
+    sock.bind(server_address)
 
-	# Listen for incoming connections
-	sock.listen(1)      
-	print('Client: Socket is listening')
-	connection, client_address = sock.accept()	
-	try:
-		print('Client: Connection from', client_address)
-		# data = recv_size(connection)
-		data = json.loads(recv_size(connection))
-		if data:	
-			# Receive n,m,N,K,T
-			n,m,N,Kc,Kw,T = get_plain_data(data)
-			client.n = n; client.m = m; client.N = N; client.Kc = Kc; client.Kw = Kw; client.T = T
-			nc = m*N; client.nc = nc
-			client.gen_rands()
-			client.load_data(n,m,N)
-			fileA = "Data/A"+str(n)+"_"+str(m)+"_"+str(N)+".txt"
-			A = np.loadtxt(fileA, delimiter=',')
-			fileB = "Data/B"+str(n)+"_"+str(m)+"_"+str(N)+".txt"
-			B = np.loadtxt(fileB, delimiter=',')	
-			x = [[0]*n]*(T+1)
-			u = [[0]*m]*T
-			x[0] = client.x0;
+    # Listen for incoming connections
+    sock.listen(1)
+    print('Client: Socket is listening')
+    connection, client_address = sock.accept()
 
-			start = time.time()
-			sec = [0]*T
-			K = Kc
-			time_client = [0]*K
-			time_cloud = [0]*K
+    try:
+        print('Client: Connection from', client_address)
+        data = json.loads(recv_size(connection))
+        if data:
+            # Receive n,m,N,K,T
+            n, m, N, Kc, Kw, T = get_plain_data(data)
+            client.n = n
+            client.m = m
+            client.N = N
+            client.Kc = Kc
+            client.Kw = Kw
+            client.T = T
+            nc = m * N
+            client.nc = nc
 
-			for i in range(0,T):
-				enc_x0 = encrypt_vector(pubkey,fp_vector(x[i]),client.coinsP[-n:])
-				client.coinsP = client.coinsP[:-n]
-				# Send [[x0]]
-				data = send_encr_data(enc_x0)
-				connection.sendall(struct.pack('>i', len(data))+data.encode('utf-8'))
-				time_x0 = time.time() - start
-				start_cloud = time.time()
-				for k in range(0,K):
-					# Receive [[t_k]]
-					data = json.loads(recv_size(connection))
-					time_cloud[k] = time.time() - start_cloud
-					start_tk = time.time()
-					enc_t = get_enc_data(data,pubkey)
-					t = retrieve_fp_vector(decrypt_vector(privkey,enc_t),3*lf)
-					U = client.compare(t)
-					enc_U = encrypt_vector(pubkey,fp_vector(U),client.coinsP[-nc:])
-					client.coinsP = client.coinsP[:-nc]
-					# Send [[U_{k+1}]]
-					data = send_encr_data(enc_U)
-					connection.sendall(struct.pack('>i', len(data))+data.encode('utf-8'))
-					time_client[k] = time.time() - start_tk
-					start_cloud = time.time()
-				K = Kw
-				u[i] = Q_vector(U[:m])
-				print("Last input: ", ["%.8f"% i for i in u[i]])
-				x[i+1] = np.dot(A,x[i]) + np.dot(B,u[i])
-				print("Next state: ", ["%.8f"% i for i in x[i+1]])
-				sec[i] = time.time() - start
-				start = time.time()
+            client.gen_rands()
+            client.load_data(n, m, N)
 
-			print(sec)
-			with open(os.path.abspath(str(DEFAULT_KEYSIZE)+'_'+str(lf)+'_results_CS'+'.txt'),'a+') as f: 
-				f.write("%d, %d, %d, %d, %d, %d: " % (n,m,N,Kc,Kw,T));
-				for item in sec:
-  					f.write("total time %.2f " % item)
-				f.write("\n")
-				f.write("avg. time FGM iteration for client: %.3f\n" % np.mean(time_client))
-				f.write("avg. time FGM iteration for cloud: %.3f\n" % np.mean(time_cloud))
+            fileA = f"Data/A{n}_{m}_{N}.txt"
+            A = np.loadtxt(fileA, delimiter=',')
+            fileB = f"Data/B{n}_{m}_{N}.txt"
+            B = np.loadtxt(fileB, delimiter=',')
 
+            x = [[0] * n] * (T + 1)
+            u = [[0] * m] * T
+            x[0] = client.x0
 
+            start = time.time()
+            sec = [0] * T
+            K = Kc
+            time_client = [0] * K
+            time_cloud = [0] * K
 
+            for i in range(0, T):
+                # Encrypt x[i] with fixed-point encoding (LabHE)
+                fixed_x = fp_vector(x[i], lf)
+                secret = pubkey.offline_gen_secret(label=..., usk=...)  # TODO: provide real label and usk
+                enc_x0 = [
+                    pubkey.encrypt_with_label(int(val), secret, r_value=r_value)
+                    for val, r_value in zip(fixed_x, client.coinsP[-n:])
+                ]
+                client.coinsP = client.coinsP[:-n]
 
-	finally:
-		print('Client: Closing connection')
-		connection.close()
+                # Send [[x0]]
+                data = send_encr_data(enc_x0)
+                connection.sendall(struct.pack('>i', len(data)) + data.encode('utf-8'))
+                time_x0 = time.time() - start
+
+                start_cloud = time.time()
+                for k in range(0, K):
+                    # Receive [[t_k]]
+                    data = json.loads(recv_size(connection))
+                    time_cloud[k] = time.time() - start_cloud
+                    start_tk = time.time()
+
+                    enc_t = get_enc_data(data, pubkey)
+                    t = retrieve_fp_vector(decrypt_vector(privkey, enc_t), 3 * lf)
+
+                    # Compare and encrypt U (LabHE)
+                    U = client.compare(t)
+                    fixed_U = fp_vector(U, lf)
+                    secret = pubkey.offline_gen_secret(label=..., usk=...)  # TODO: provide real label and usk
+                    enc_U = [
+                        pubkey.encrypt_with_label(int(val), secret, r_value=r_value)
+                        for val, r_value in zip(fixed_U, client.coinsP[-nc:])
+                    ]
+                    client.coinsP = client.coinsP[:-nc]
+
+                    # Send [[U_{k+1}]]
+                    data = send_encr_data(enc_U)
+                    connection.sendall(struct.pack('>i', len(data)) + data.encode('utf-8'))
+                    time_client[k] = time.time() - start_tk
+                    start_cloud = time.time()
+
+                K = Kw
+                u[i] = Q_vector(U[:m])
+                print("Last input: ", ["%.8f" % val for val in u[i]])
+                x[i + 1] = np.dot(A, x[i]) + np.dot(B, u[i])
+                print("Next state: ", ["%.8f" % val for val in x[i + 1]])
+                sec[i] = time.time() - start
+                start = time.time()
+
+            print(sec)
+            with open(os.path.abspath(f"{DEFAULT_KEYSIZE}_{lf}_results_CS.txt"), 'a+') as f:
+                f.write(f"{n}, {m}, {N}, {Kc}, {Kw}, {T}: ")
+                for item in sec:
+                    f.write(f"total time {item:.2f} ")
+                f.write("\n")
+                f.write(f"avg. time FGM iteration for client: {np.mean(time_client):.3f}\n")
+                f.write(f"avg. time FGM iteration for cloud: {np.mean(time_cloud):.3f}\n")
+
+    finally:
+        print('Client: Closing connection')
+        connection.close()
 
 
 if __name__ == '__main__':
-	main()
+    main()

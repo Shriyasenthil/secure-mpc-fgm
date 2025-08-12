@@ -19,7 +19,7 @@ try:
 except ImportError:
 	HAVE_GMP = False
 
-DEFAULT_KEYSIZE = 1024						
+DEFAULT_KEYSIZE = 512						
 DEFAULT_MSGSIZE = 64 						
 DEFAULT_SECURITYSIZE = 100					
 DEFAULT_PRECISION = int(DEFAULT_MSGSIZE/2)	
@@ -75,6 +75,14 @@ def retrieve_fp_matrix(mat,prec=DEFAULT_PRECISION):
 
 def decrypt_vector(privkey, x):
     return np.array([privkey.decrypt(i) for i in x])
+
+
+def convert_paillier_to_labhe(vec, mpk):
+    from labhe import LabEncryptedNumber
+    # vec is list or np.ndarray of paillier.EncryptedNumber
+    converted = [LabEncryptedNumber(mpk, x.ciphertext(False)) for x in vec]
+    return converted
+
 class Server:
     def __init__(self, n, m, N, l=DEFAULT_MSGSIZE, sigma=DEFAULT_KEYSIZE):
         filepub = "Keys/pubkey" + str(DEFAULT_KEYSIZE) + ".txt"
@@ -124,20 +132,81 @@ class Server:
         self.coeff_0 = coeff_0
 
     def t_iterate(self, z):
-        return sum_encrypted_vectors(np.dot(self.coeff_z, z), self.coeff_0)
+        print("DEBUG t_iterate: coeff_z types:", [type(x) for x in np.ravel(self.coeff_z)][:10])
+        print("DEBUG t_iterate: z types:", [type(x) for x in z][:10])
+
+        # numeric matrix (coeff_z) dot product with list z (elements expected to be LabEncryptedNumber)
+        paillier_result = list(np.dot(self.coeff_z, z))
+
+        # If elements are already LabEncryptedNumber, use directly.
+        import labhe
+        if len(paillier_result) > 0 and isinstance(paillier_result[0], labhe.LabEncryptedNumber):
+            labhe_result = paillier_result
+        else:
+            # Otherwise try to convert paillier.EncryptedNumber -> LabEncryptedNumber
+            labhe_result = convert_paillier_to_labhe(paillier_result, self.pubkey)
+
+        # coeff_0 must be LabEncryptedNumber sequence too; ensure it's a plain list
+        coeff0_list = list(self.coeff_0) if not isinstance(self.coeff_0, list) else self.coeff_0
+
+        return sum_encrypted_vectors(labhe_result, coeff0_list)
+
+
+
+
 
     def z_iterate(self, new_U, U):
         new_z = [fp(1 + self.eta) * v for v in new_U]
         z = [fp(-self.eta) * v for v in U]
         return sum_encrypted_vectors(new_z, z)
 
-
+import time
+import json
+import numbers
+try:
+    from gmpy2 import mpz as _mpz_type
+except Exception:
+    _mpz_type = None
 
 def send_encr_data(encrypted_number_list):
-	time.sleep(NETWORK_DELAY)
-	enc_with_one_pub_key = {}
-	enc_with_one_pub_key = [str(x.ciphertext()) for x in encrypted_number_list]
-	return json.dumps(enc_with_one_pub_key)
+    """
+    Serialize a list of encrypted numbers into JSON-ready list of [c0, c1] string pairs.
+    Works whether each encrypted number exposes .ciphertext as a method or property,
+    and whether the ciphertext is a single integer or a (c0, c1) pair.
+    """
+    time.sleep(NETWORK_DELAY)
+    out = []
+
+    for x in encrypted_number_list:
+        # call ciphertext if it's a method, otherwise access property
+        ct = x.ciphertext() if callable(getattr(x, "ciphertext", None)) else getattr(x, "ciphertext", None)
+
+        # If ct is an mpz or int-like single value, treat as (c0, 0)
+        if isinstance(ct, (int,)) or (_mpz_type is not None and isinstance(ct, _mpz_type)) or isinstance(ct, numbers.Integral):
+            c0 = int(ct)
+            c1 = 0
+        else:
+            # It might be a tuple/list (c0, c1)
+            # Some implementations return (EncryptedNumber, EncryptedNumber) or (int, EncryptedNumber) etc.
+            if isinstance(ct, (tuple, list)) and len(ct) == 2:
+                # convert both parts to ints if possible (EncryptedNumber -> its integer ciphertext is already handled on receiver)
+                try:
+                    # if elements are mpz or ints
+                    c0 = int(ct[0])
+                    c1 = int(ct[1])
+                except Exception:
+                    # fallback: convert to string representation so receiver can parse with ast.literal_eval or handle it
+                    c0 = str(ct[0])
+                    c1 = str(ct[1])
+            else:
+                # Last-resort: stringify whatever we got
+                c0 = str(ct)
+                c1 = 0
+
+        out.append([str(c0), str(c1)])
+
+    return json.dumps(out)
+
 
 def send_plain_data(data):
 	time.sleep(NETWORK_DELAY)
@@ -163,8 +232,62 @@ def recv_size(the_socket):
 		total_len=sum([len(i) for i in total_data ])
 	return b''.join(total_data)
 
-def get_enc_data(received_dict,pubkey):
-	return [labhe.LabEncryptedNumber(pubkey, int(x)) for x in received_dict]
+import json
+import ast
+try:
+    from gmpy2 import mpz as _mpz_type
+except Exception:
+    _mpz_type = None
+
+def get_enc_data(received_json, pubkey):
+    """
+    Parse JSON produced by send_encr_data and return list of LabEncryptedNumber or Paillier encrypted wrappers.
+    `received_json` can already be a Python list or a JSON string.
+    """
+    # If a JSON string, parse it
+    if isinstance(received_json, str):
+        data = json.loads(received_json)
+    else:
+        data = received_json
+
+    result = []
+    for item in data:
+        # Expect item == [c0_str, c1_str] per send_encr_data
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            s0, s1 = item[0], item[1]
+            # try convert s0/s1 to int (they were emitted as strings)
+            try:
+                c0 = int(s0)
+            except Exception:
+                # maybe a long repr: try ast.literal_eval
+                try:
+                    c0 = ast.literal_eval(s0)
+                except Exception:
+                    raise ValueError(f"Cannot parse ciphertext element: {s0}")
+            try:
+                c1 = int(s1)
+            except Exception:
+                try:
+                    c1 = ast.literal_eval(s1)
+                except Exception:
+                    # if the sender stringified a Paillier EncryptedNumber or LabEncryptedNumber object, you'll need a different
+                    # protocol — here we'll just raise a helpful error.
+                    raise ValueError(f"Cannot parse ciphertext element: {s1}")
+
+            # Now create LabEncryptedNumber or Paillier EncryptedNumber depending on your expected format.
+            # If using LabHE two-component ciphertexts, convert to LabEncryptedNumber:
+            try:
+                import labhe
+                # If c1 == 0 this might be a single-component encryption; still wrap as LabEncryptedNumber if you expect LabHE.
+                result.append(labhe.LabEncryptedNumber(pubkey, (c0, c1)))
+            except Exception:
+                # fallback: return raw ints
+                result.append((c0, c1))
+        else:
+            raise ValueError("Received unexpected encryption format; expected list of [c0, c1].")
+
+    return result
+
 
 def main():
 	
